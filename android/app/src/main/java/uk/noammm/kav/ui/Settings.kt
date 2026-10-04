@@ -113,6 +113,8 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 
         Group(T("updates", "עדכונים"))
         UpdateSection(model)
+        Spacer(Modifier.height(K.gap2))
+        TimetableSection()
 
         Group(T("what is not in here", "מה לא נמצא כאן"))
         Absent(

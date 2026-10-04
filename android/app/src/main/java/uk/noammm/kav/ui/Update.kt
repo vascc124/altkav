@@ -132,7 +132,7 @@ fun UpdateSection(model: KavModel) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             AppIcon(40.dp)
             Column(Modifier.weight(1f)) {
-                Text(T.ltr("Kav ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
+                Text(T.ltr("Kav+ ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
                 Text(
                     when {
                         release != null -> T("${release.version} is available", "גרסה ${release.version} זמינה")
@@ -156,5 +156,53 @@ fun UpdateSection(model: KavModel) {
         }
         if (release != null) ReleaseNotes(release, maxHeight = 200.dp)
         UpdateProgress(model)
+    }
+}
+
+// Kav+: which week's timetable is in use, and a way to fetch this week's now.
+@Composable
+fun TimetableSection() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var since by remember { mutableStateOf(uk.noammm.kav.data.TimetableUpdate.inUseSince(ctx)) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    val day = java.text.SimpleDateFormat("d/M/yyyy", java.util.Locale.US).apply { timeZone = uk.noammm.kav.ui.ISRAEL }
+    Column(
+        Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(14.dp).padding(K.gap3),
+        verticalArrangement = Arrangement.spacedBy(K.gap2),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
+            Column(Modifier.weight(1f)) {
+                Text(T("Timetable", "לוח זמנים"), fontSize = 14.sp, color = K.text)
+                Text(
+                    status ?: T("Built ${day.format(java.util.Date(since))}", "נבנה ב-${day.format(java.util.Date(since))}"),
+                    fontSize = 12.sp, color = K.dim,
+                )
+            }
+            Chip(if (checking) T("Checking…", "בודקים…") else T("Check now", "בדקו עכשיו"), false) {
+                if (checking) return@Chip
+                scope.launch {
+                    checking = true
+                    val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { uk.noammm.kav.data.TimetableUpdate.check(ctx, force = true) }
+                    }
+                    status = when {
+                        r.isFailure -> T("Couldn't check", "לא הצלחנו לבדוק")
+                        r.getOrNull() == true -> T("A newer week was downloaded. Close and reopen Kav+ to use it.", "הורד שבוע חדש יותר. סגרו ופתחו מחדש את Kav+ כדי להשתמש בו.")
+                        else -> T("Up to date", "מעודכן")
+                    }
+                    since = uk.noammm.kav.data.TimetableUpdate.inUseSince(ctx)
+                    checking = false
+                }
+            }
+        }
+        Text(
+            T(
+                "Rebuilt every Saturday night from the Ministry of Transport feed; Kav+ fetches it by itself, at most once a day.",
+                "נבנה מחדש בכל מוצאי שבת מנתוני משרד התחבורה; Kav+ מוריד אותו לבד, לכל היותר פעם ביום.",
+            ),
+            fontSize = 11.sp, color = K.dim, lineHeight = 16.sp,
+        )
     }
 }

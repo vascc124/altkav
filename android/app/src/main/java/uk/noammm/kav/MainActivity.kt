@@ -390,7 +390,11 @@ private val netLoadMutex = Mutex()
 suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
     netLoadMutex.withLock {
         Loaded.net ?: run {
-            val n = ctx.assets.open("il.kav").use { Net.read(it) }
+            // Kav+: a newer weekly timetable downloaded by TimetableUpdate wins over the APK's.
+            val fresh = uk.noammm.kav.data.TimetableUpdate.file(ctx)
+            val n = (if (fresh.exists()) runCatching { fresh.inputStream().use { Net.read(it) } }
+                .onFailure { uk.noammm.kav.data.TimetableUpdate.discard(ctx) }.getOrNull() else null)
+                ?: ctx.assets.open("il.kav").use { Net.read(it) }
             Loaded.store(n)
             n
         }
@@ -411,6 +415,13 @@ private fun Root() {
     // Relabels the launcher shortcuts when the language changes, and covers favourites
     // restored from a backup or saved before Kav+ added shortcuts.
     LaunchedEffect(T.lang) { withContext(Dispatchers.IO) { Shortcuts.sync(app, Prefs.favourites(app)) } }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            runCatching { uk.noammm.kav.data.TimetableUpdate.check(app) }
+                .onFailure { android.util.Log.w("KavTimetable", "check failed", it) }
+                .onSuccess { if (it) android.util.Log.i("KavTimetable", "new timetable saved for next start") }
+        }
+    }
     var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
     var pickSupport by remember { mutableStateOf(Prefs.pickSupport(ctx)) }
     Box(Modifier.fillMaxSize()) {

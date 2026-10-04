@@ -1,0 +1,51 @@
+# Kav+: rebuilds the national timetable every week from the Ministry of Transport GTFS feed and
+# publishes it on the "timetable" pre-release, where the app looks for it (TimetableUpdate.kt).
+# Runs Saturday night, so the week built is the one starting the next day.
+name: Timetable
+
+on:
+  schedule:
+    - cron: "0 20 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the MOT feed
+        run: sh tools/fetch.sh
+
+      - name: Build the bundle
+        run: KAV_REGION=il KAV_BBOX=national KAV_OUT=out python tools/export_web_bundle.py
+
+      - name: Describe it
+        run: |
+          python - <<'PY'
+          import datetime, hashlib, json
+          b = open("out/il.kav.gz", "rb").read()
+          assert b[:2] == b"\x1f\x8b" and len(b) > 1_000_000, "bundle looks wrong"
+          json.dump({
+              "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "bytes": len(b),
+              "sha256": hashlib.sha256(b).hexdigest(),
+          }, open("out/timetable.json", "w"))
+          print(open("out/timetable.json").read())
+          PY
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view timetable >/dev/null 2>&1 || gh release create timetable --prerelease --latest=false \
+            --title "Timetable" --notes "The weekly national timetable for Kav+, rebuilt every Saturday night from the Ministry of Transport GTFS feed. The app downloads it by itself; nothing to install here."
+          gh release upload timetable out/il.kav.gz out/timetable.json --clobber

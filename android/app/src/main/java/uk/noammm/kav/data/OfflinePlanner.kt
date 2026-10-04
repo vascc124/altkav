@@ -19,6 +19,7 @@ object OfflinePlanner {
     private const val ACCESS_M = 900.0        // walk to or from the first and last stop up to this far
     private const val MIN_CHANGE = 120        // seconds to change vehicles at the same stop
     private const val INF = Int.MAX_VALUE / 2
+    private const val CHANGE_PENALTY = 5 * 60 // what one more vehicle is worth, in arrival time
 
     fun stopId(s: Int) = -(s + 1)
     fun lineId(r: Int) = -(r + 1)
@@ -109,7 +110,7 @@ object OfflinePlanner {
     // Earliest arrival from [origin] after [t0] (seconds since today's Israel midnight).
     private fun scan(
         net: Net, links: Links, origin: List<Pair<Int, Int>>, egress: Map<Int, Int>,
-        t0: Int, today: Int, allowed: (Int) -> Boolean,
+        t0: Int, today: Int, allowed: (Int) -> Boolean, maxRides: Int = 8,
     ): Found? {
         val nS = net.nStops; val nT = net.tripRoute.size
         val arrT = IntArray(nS) { INF }          // earliest arrival at a stop
@@ -118,6 +119,10 @@ object OfflinePlanner {
         val viaWalk = IntArray(nS) { -1 }        // stop walked from; -2 = from the origin
         val seenK = Array(3) { IntArray(nT) { -1 } } // per day offset: the stop_time a trip was boarded at
         val seenT = Array(3) { IntArray(nT) }
+        // Vehicles taken to reach a stop, and to be on a trip. With a cap of one this is exact: only stops
+        // reached on foot from the origin board. With more it is a good approximation, not exact.
+        val rides = IntArray(nS)
+        val tripRides = Array(3) { IntArray(nT) }
         for ((s, w) in origin) if (t0 + w < arrT[s]) { arrT[s] = t0 + w; boardT[s] = t0 + w; viaWalk[s] = -2 }
 
         var best = INF; var bestStop = -1
@@ -143,19 +148,19 @@ object OfflinePlanner {
             if (!net.runsOn(trip, days[o]) || !allowed(net.rType[net.tripRoute[trip]])) continue
             val from = stStop[j]
             if (seenK[o][trip] < 0) {
-                if (boardT[from] > tBest) continue
-                seenK[o][trip] = j; seenT[o][trip] = tBest
+                if (boardT[from] > tBest || rides[from] >= maxRides) continue
+                seenK[o][trip] = j; seenT[o][trip] = tBest; tripRides[o][trip] = rides[from] + 1
             }
             val to = stStop[j + 1]
             val a = stDep[j + 1] + OFFSETS[o]
             if (a < arrT[to]) {
-                arrT[to] = a; boardT[to] = a + MIN_CHANGE; viaWalk[to] = -1
+                arrT[to] = a; boardT[to] = a + MIN_CHANGE; viaWalk[to] = -1; rides[to] = tripRides[o][trip]
                 viaRide[to] = Ride(trip, o, seenK[o][trip], j + 1, seenT[o][trip], a)
                 egress[to]?.let { w -> if (a + w < best) { best = a + w; bestStop = to } }
                 for (x in links.start[to] until links.start[to + 1]) {
                     val nb = links.to[x]; val aw = a + links.secs[x]
                     if (aw < arrT[nb]) {
-                        arrT[nb] = aw; boardT[nb] = aw; viaWalk[nb] = to; viaRide[nb] = null
+                        arrT[nb] = aw; boardT[nb] = aw; viaWalk[nb] = to; viaRide[nb] = null; rides[nb] = rides[to]
                         egress[nb]?.let { w -> if (aw + w < best) { best = aw + w; bestStop = nb } }
                     }
                 }
@@ -226,7 +231,7 @@ object OfflinePlanner {
         val found = ArrayList<Found>()
         var t = if (arriveBy) target - 3 * 3600 else target
         var tries = 0
-        while (found.size < (if (arriveBy) 12 else count) && tries++ < 16) {
+        while (found.size < (if (arriveBy) 12 else count * 2) && tries++ < 20) {
             val f = scan(net, links, origin, egress, t, today, allowed) ?: break
             if (arriveBy && f.arr > target) break
             if (found.none { same(it, f) }) found.add(f)
@@ -234,7 +239,35 @@ object OfflinePlanner {
             // start, a minute's margin before boarding), so it finds the one after.
             t = f.dep + 61
         }
-        val chosen = if (arriveBy) found.sortedByDescending { it.dep }.take(count) else found
+        // Trips with fewer vehicles: the fastest trip may change twice where one bus is barely slower.
+        // Direct and one-change searches over the same window join in, then anything another trip
+        // beats on every count (leaves no earlier, arrives no later, no more vehicles) is dropped.
+        if (found.isNotEmpty()) {
+            val horizon = found.maxOf { it.arr }
+            for (cap in 1..2) {
+                var tc = if (arriveBy) target - 3 * 3600 else target
+                var n = 0
+                while (n++ < 4) {
+                    val f = scan(net, links, origin, egress, tc, today, allowed, maxRides = cap) ?: break
+                    if (f.arr > horizon + 20 * 60 || (arriveBy && f.arr > target)) break
+                    if (found.none { same(it, f) }) found.add(f)
+                    tc = f.dep + 61
+                }
+            }
+        }
+        // Each change is worth 5 min of arrival, and against a trip with fewer changes leaving up to 10 min
+        // earlier still counts as "no earlier": nobody wants an extra change to arrive a minute sooner, or
+        // two extra changes just to set off a minute after the train. The next bus of the same kind stays.
+        fun cost(f: Found) = f.arr + CHANGE_PENALTY * rideCount(f)
+        val kept = found.filter { a ->
+            found.none { b ->
+                b !== a && (b.dep >= a.dep || (rideCount(b) < rideCount(a) && b.dep >= a.dep - 10 * 60)) &&
+                    cost(b) <= cost(a) && rideCount(b) <= rideCount(a) &&
+                    (b.dep > a.dep || cost(b) < cost(a) || rideCount(b) < rideCount(a))
+            }
+        }
+        val chosen = if (arriveBy) kept.sortedByDescending { it.dep }.take(count)
+        else kept.sortedWith(compareBy({ it.arr }, { rideCount(it) })).take(count + 1)
 
         val lines = LinkedHashMap<Int, Moovit.LineInfo>()
         val stops = LinkedHashMap<Int, Moovit.StopInfo>()
@@ -313,6 +346,8 @@ object OfflinePlanner {
     }
 
     const val SECTION = "Planned on your phone"
+
+    private fun rideCount(f: Found) = f.steps.count { it.ride != null }
 
     private fun same(a: Found, b: Found): Boolean {
         fun key(f: Found) = f.steps.mapNotNull { it.ride?.let { r -> r.trip } }

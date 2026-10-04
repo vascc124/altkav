@@ -190,7 +190,14 @@ fun PlacePicker(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Result.failure(e)
+                // Kav+: with Moovit out of reach, places and addresses come from OpenStreetMap.
+                try {
+                    Result.success(uk.noammm.kav.data.Photon.searchPlaces(q, at))
+                } catch (e2: kotlinx.coroutines.CancellationException) {
+                    throw e2
+                } catch (e2: Exception) {
+                    Result.failure(e)
+                }
             }
         }
         val waited = kotlinx.coroutines.withTimeoutOrNull(3000) { online.await() }

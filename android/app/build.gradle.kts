@@ -15,10 +15,10 @@ android {
         applicationId = "uk.noammm.kav.plus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2102 // upstream versionCode × 100 + Kav+ build
+        versionCode = 2103 // upstream versionCode × 100 + Kav+ build
         // "<upstream version>.p<n>": Updates.isNewer compares the digits, so 2.1.p2 > 2.1.p1
         // and the next upstream merge (2.2.p1) still counts as newer.
-        versionName = "2.1.p2"
+        versionName = "2.1.p3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // MapLibre's renderer is native code. Every phone Kav can reach is arm64;
         // x86_64 stays so the release APK still installs on the emulator.

@@ -33,10 +33,10 @@ fun MapPrompt() {
             Text(T("Download the map", "הורדת המפה"), fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
             Text(
                 T(
-                    "Kav keeps its map on your phone instead of loading tiles from a server as " +
+                    "AltKav+ keeps its map on your phone instead of loading tiles from a server as " +
                         "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for " +
                         "all of Israel, downloaded once. After that the map works with no signal.",
-                    "Kav שומרת את המפה על הטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
+                    "AltKav+ שומרת את המפה על הטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
                         "כך שאף אחד לא עוקב אחרי מה שאתם מסתכלים עליו. מדובר בכ-${MapFile.BYTES shr 20} מגה-בייט " +
                         "לכל ישראל, בהורדה חד-פעמית. אחר כך המפה עובדת גם בלי קליטה.",
                 ),

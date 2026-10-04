@@ -819,9 +819,9 @@ private fun LookPrompt(onDone: () -> Unit) {
             Text(T("Pick a look", "בחרו מראה"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
             Text(
                 T(
-                    "Kav 2.0 comes in OLED black, light and dark, with liquid glass or solid on top. " +
+                    "AltKav+ comes in OLED black, light and dark, with liquid glass or solid on top. " +
                         "You can change this later in Settings.",
-                    "Kav 2.0 מגיעה בשחור OLED, בבהיר ובכהה, עם זכוכית נוזלית או משטחים אטומים. " +
+                    "AltKav+ מגיעה בשחור OLED, בבהיר ובכהה, עם זכוכית נוזלית או משטחים אטומים. " +
                         "אפשר לשנות את זה אחר כך בהגדרות.",
                 ),
                 fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
@@ -844,26 +844,26 @@ private fun SupportPrompt(onDone: () -> Unit) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
         ) {
-            Text(T("Enjoying Kav?", "נהנים מקו?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Enjoying AltKav+?", "נהנים מ־AltKav+?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
             Text(
                 T(
-                    "Kav is made to protect every user's privacy and to make riding the bus a little more " +
-                        "bearable (as much as possible).",
-                    "קו מפותחת במטרה לשמור על הפרטיות של כל משתמש ולהפוך את השימוש באוטובוסים לחוויה " +
-                        "נסבלת יותר (כמה שאפשר).",
+                    "AltKav+ is built on Kav by Noam, made to protect every user's privacy and to make riding the " +
+                        "bus a little more bearable (as much as possible).",
+                    "AltKav+ מבוססת על קו של נועם, שפותחה במטרה לשמור על הפרטיות של כל משתמש ולהפוך את השימוש " +
+                        "באוטובוסים לחוויה נסבלת יותר (כמה שאפשר).",
                 ),
                 fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
             )
             Text(
                 buildAnnotatedString {
                     append(T(
-                        "If you'd like to support Kav's development, you're welcome to tap the button below. " +
+                        "If you'd like to support the development of Kav, the app AltKav+ builds on, you're welcome to tap the button below. " +
                             "If that's not an option for you, you can show your support with ",
-                        "אם תרצו לתרום להמשך הפיתוח של האפליקציה, אתם מוזמנים ללחוץ על הכפתור למטה. " +
+                        "אם תרצו לתרום להמשך הפיתוח של קו, האפליקציה ש־AltKav+ מבוססת עליה, אתם מוזמנים ללחוץ על הכפתור למטה. " +
                             "אם אין לכם אפשרות, אתם מוזמנים להביע תמיכה דרך ",
                     ))
-                    withLink(LinkAnnotation.Url(REPO_URL, TextLinkStyles(SpanStyle(color = K.accent)))) {
-                        append(T("a star on GitHub", "כוכב בגיטהאב"))
+                    withLink(LinkAnnotation.Url("https://github.com/${uk.noammm.kav.data.Updates.UPSTREAM_OWNER}/${uk.noammm.kav.data.Updates.UPSTREAM_REPO}", TextLinkStyles(SpanStyle(color = K.accent)))) {
+                        append(T("a star for Kav on GitHub", "כוכב לקו בגיטהאב"))
                     }
                     append(".")
                 },
@@ -897,7 +897,7 @@ private fun ExitPrompt(onStay: () -> Unit, onExit: () -> Unit) {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(K.rCard)).background(K.surface1).padding(K.gap5),
             verticalArrangement = Arrangement.spacedBy(K.gap4),
         ) {
-            Text(T("Exit Kav?", "לצאת מ־Kav?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+            Text(T("Exit AltKav+?", "לצאת מ־AltKav+?"), fontSize = 19.sp, color = K.text, fontWeight = FontWeight.SemiBold)
             Text(T("A trip in progress is kept until you end it.", "נסיעה שמתבצעת נשמרת עד שתסיימו אותה."), fontSize = 14.sp, color = K.dim, lineHeight = 20.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
                 Box(

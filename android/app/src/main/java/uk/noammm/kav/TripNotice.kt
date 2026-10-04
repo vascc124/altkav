@@ -270,7 +270,24 @@ internal fun tripAlert(journey: ActiveJourney, current: Int, fix: Fix?, now: Lon
     val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
     if (steps.isEmpty()) return null
     val r = journey.resolved
-    return when (val step = steps[current.coerceIn(0, steps.lastIndex)]) {
+    // AltKav+: on the way to a ride that is the last of the day, ten minutes' warning before it leaves.
+    val here = steps[current.coerceIn(0, steps.lastIndex)]
+    val last = journey.trip.tags.any { it == "Last one today" || it == "האחרון להיום" }
+    if (last && (here is Step.Start || here is Step.Walk)) {
+        val next = steps.drop(current).filterIsInstance<Step.Wait>().firstOrNull()
+        if (next != null) {
+            val (ride, wait) = boardingChoice(next.ride, next.wait, journey.chosen[next.legIndex] ?: 0)
+            val at = r.departures(ride, wait).firstOrNull { it.tripId == ride.tripId }?.timeUtc ?: ride.dep
+            val line = ride.shortName.ifBlank { r.line(ride.lineId)?.number.orEmpty() }
+            val mins = ((at - now) / 60).toInt()
+            if (at - now in 60..600) return TripAlert(
+                "last-${next.legIndex}",
+                T("The last $line today leaves in $mins min", "ה־$line האחרון להיום יוצא בעוד $mins דק׳"),
+                listOfNotNull(r.stopName(ride.fromStop), whenLabel(at, now)).joinToString(" · "),
+            )
+        }
+    }
+    return when (val step = here) {
         is Step.Wait -> {
             val (ride, wait) = boardingChoice(step.ride, step.wait, journey.chosen[step.legIndex] ?: 0)
             val at = r.departures(ride, wait).firstOrNull { it.tripId == ride.tripId }?.timeUtc ?: ride.dep

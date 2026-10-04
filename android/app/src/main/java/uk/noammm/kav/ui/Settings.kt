@@ -93,10 +93,10 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             SwitchRow(
                 T("Private search", "חיפוש פרטי"),
                 T(
-                    "Keep your exact location off search and off the anonymous registration Kav makes " +
+                    "Keep your exact location off search and off the anonymous registration AltKav+ makes " +
                         "with Moovit. Planning a trip still sends the two points you pick, since that " +
                         "is the trip you asked it to find.",
-                    "המיקום המדויק שלכם לא נשלח בחיפוש ולא ברישום האנונימי ש-Kav מבצעת מול Moovit. " +
+                    "המיקום המדויק שלכם לא נשלח בחיפוש ולא ברישום האנונימי ש-AltKav+ מבצעת מול Moovit. " +
                         "תכנון מסלול עדיין שולח את שתי הנקודות שאתם בוחרים, כי זו הנסיעה שביקשתם למצוא.",
                 ),
                 priv,
@@ -128,10 +128,10 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
             T("No adverts", "אין פרסומות"),
             T(
                 "The official app carries Vungle video ads (1,038 class references), " +
-                    "AdMob and Facebook Audience Network. Kav calls none of the ad endpoints, and never " +
+                    "AdMob and Facebook Audience Network. AltKav+ calls none of the ad endpoints, and never " +
                     "requests ad targeting.",
                 "האפליקציה הרשמית כוללת פרסומות וידאו של Vungle (1,038 הפניות למחלקות), " +
-                    "AdMob ו־Facebook Audience Network. Kav לא פונה לאף אחת מנקודות הקצה הפרסומיות, " +
+                    "AdMob ו־Facebook Audience Network. AltKav+ לא פונה לאף אחת מנקודות הקצה הפרסומיות, " +
                     "ולעולם לא מבקשת מיקוד פרסומי.",
             ),
         )
@@ -215,10 +215,10 @@ private fun SeenChoice(model: KavModel, onChoose: () -> Unit) {
             Seen.CITY -> T(
                 "Moovit sees the centre of the town or city you're in, or the closest one, worked out on " +
                     "your phone. Never your exact spot. " +
-                    (city?.let { "Now: $it." } ?: "Kav finds your town once it has your location."),
+                    (city?.let { "Now: $it." } ?: "AltKav+ finds your town once it has your location."),
                 "Moovit רואה את מרכז היישוב שבו אתם נמצאים, או של הקרוב ביותר, שמחושב בטלפון שלכם. " +
                     "אף פעם לא את המיקום המדויק שלכם. " +
-                    (city?.let { "כרגע: $it." } ?: "Kav תמצא את היישוב שלכם כשיהיה לה מיקום."),
+                    (city?.let { "כרגע: $it." } ?: "AltKav+ תמצא את היישוב שלכם כשיהיה לה מיקום."),
             )
             Seen.PLACE -> if (place == null) T("Pick a place for Moovit to see.", "בחרו מקום ש-Moovit יראה.") else T(
                 "Moovit sees $place instead of where you are, so places near it come first.",
@@ -294,7 +294,7 @@ private fun BackupSection(model: KavModel) {
 }
 
 internal fun importError(e: Throwable): String =
-    if (e is Backup.NotABackup) T("That file isn't a Kav backup.", "הקובץ הזה אינו גיבוי של Kav.")
+    if (e is Backup.NotABackup) T("That file isn't a Kav or AltKav+ backup.", "הקובץ הזה אינו גיבוי של Kav או AltKav+.")
     else T("Couldn't read that file.", "לא ניתן היה לקרוא את הקובץ.")
 
 @Composable

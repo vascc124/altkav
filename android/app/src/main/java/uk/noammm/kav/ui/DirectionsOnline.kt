@@ -233,8 +233,8 @@ fun DirectionsOnline(model: KavModel) {
                 "Moovit's planner did not answer: $reason",
                 "התכנון של Moovit לא הגיב: $reason",
             ) else T(
-                "No connection. Kav needs one to plan a trip.",
-                "אין חיבור. Kav זקוק לחיבור כדי לתכנן נסיעה.",
+                "No connection. AltKav+ needs one to plan a trip.",
+                "אין חיבור. AltKav+ זקוקה לחיבור כדי לתכנן נסיעה.",
             )
             planning = false
         }

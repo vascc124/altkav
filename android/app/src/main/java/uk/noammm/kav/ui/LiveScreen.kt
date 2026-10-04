@@ -403,7 +403,15 @@ fun LiveScreen(model: KavModel) {
     }
     val held = remember(pattern) { pattern.mapNotNull { stopsById[it] }.associateBy { it.id } }
     val asked = rememberStopNames(pattern.filter { it !in held })
-    val lineStops = remember(pattern, held, asked) {
+    // Kav+: a Na'im bus (from the municipality's feed, not Moovit) brings its stops from the Na'im timetable.
+    val naimStops = remember(focusVehicle?.tripId, focusVehicle?.arrival?.lineId) {
+        val v = focusVehicle?.arrival
+        if (v != null && v.tripId < 0 && v.lineId <= -2_000_000) uk.noammm.kav.data.NaimLive.app?.let {
+            uk.noammm.kav.data.NaimLive.tripStops(it, -v.tripId)
+        }.orEmpty() else emptyList()
+    }
+    val lineStops = remember(pattern, held, asked, naimStops) {
+        if (naimStops.isNotEmpty()) return@remember naimStops
         pattern.mapNotNull { id ->
             held[id] ?: asked[id]?.let { info -> info.point?.let { (lat, lon) -> Moovit.Stop(id, lat, lon, info.name) } }
         }

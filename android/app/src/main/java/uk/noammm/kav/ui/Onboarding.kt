@@ -72,9 +72,9 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 Text(T("Pick a colour", "בחרו צבע"), style = Display, fontSize = 26.sp)
                 Text(
                     T(
-                        "Kav is grey with one colour on top. Drag the dot, or take a preset; " +
+                        "AltKav+ is grey with one colour on top. Drag the dot, or take a preset; " +
                             "the preview follows as you go, and Settings has this again later.",
-                        "Kav אפורה עם צבע אחד מעליה. גררו את הנקודה או בחרו גוון מוכן; " +
+                        "AltKav+ אפורה עם צבע אחד מעליה. גררו את הנקודה או בחרו גוון מוכן; " +
                             "התצוגה המקדימה מתעדכנת תוך כדי, ואפשר לשנות זאת שוב בהגדרות.",
                     ),
                     fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),
@@ -127,13 +127,13 @@ fun OnboardingScreen(onDone: () -> Unit) {
                 Text(T("Download the map", "הורדת המפה"), style = Display, fontSize = 26.sp)
                 Text(
                     T(
-                        "Kav keeps its map on your phone instead of loading tiles from a server as " +
+                        "AltKav+ keeps its map on your phone instead of loading tiles from a server as " +
                             "you go, so nothing tracks where you look. It's about ${MapFile.BYTES shr 20} MB for all " +
-                            "of Israel, once. After that the map works with no signal. Kav needs it " +
+                            "of Israel, once. After that the map works with no signal. AltKav+ needs it " +
                             "before it can show you anything, so it downloads now.",
-                        "Kav מחזיקה את המפה בטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
+                        "AltKav+ מחזיקה את המפה בטלפון שלכם במקום לטעון אריחים משרת תוך כדי תנועה, " +
                             "כך שאף אחד לא עוקב אחרי מה שאתם מסתכלים עליו. זה בערך ${MapFile.BYTES shr 20} MB לכל " +
-                            "ישראל, פעם אחת. אחרי זה המפה עובדת גם בלי קליטה. Kav צריכה אותה כדי " +
+                            "ישראל, פעם אחת. אחרי זה המפה עובדת גם בלי קליטה. AltKav+ צריכה אותה כדי " +
                             "להציג לכם משהו, אז מורידים אותה עכשיו.",
                     ),
                     fontSize = 14.sp, color = K.dim, lineHeight = 20.sp, modifier = Modifier.padding(top = K.gap2),

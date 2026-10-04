@@ -21,7 +21,7 @@ object NaimLive {
 
     // ---- the static feed: just what turning positions into times needs ----
 
-    private class StopTime(val code: Int, val lat: Double, val lon: Double, val sec: Int)
+    private class StopTime(val code: Int, val lat: Double, val lon: Double, val sec: Int, val name: String = "")
     private class Trip(val short: String, val times: List<StopTime>)
     private class Static(val trips: Map<String, Trip>)
 
@@ -86,15 +86,15 @@ object NaimLive {
         }
         val routes = csv(files["routes.txt"].orEmpty()).associate { it["route_id"]!! to it["route_short_name"].orEmpty().trim() }
         val stops = csv(files["stops.txt"].orEmpty()).associate {
-            it["stop_id"]!! to Triple(it["stop_code"]?.toIntOrNull() ?: 0, it["stop_lat"]?.toDoubleOrNull() ?: 0.0, it["stop_lon"]?.toDoubleOrNull() ?: 0.0)
+            it["stop_id"]!! to (Triple(it["stop_code"]?.toIntOrNull() ?: 0, it["stop_lat"]?.toDoubleOrNull() ?: 0.0, it["stop_lon"]?.toDoubleOrNull() ?: 0.0) to it["stop_name"].orEmpty())
         }
         val tripRoute = csv(files["trips.txt"].orEmpty()).associate { it["trip_id"]!! to (routes[it["route_id"]] ?: "") }
         val seqs = HashMap<String, MutableList<Pair<Int, StopTime>>>()
         for (r in csv(files["stop_times.txt"].orEmpty())) {
             val tid = r["trip_id"] ?: continue
-            val st = stops[r["stop_id"]] ?: continue
+            val (st, name) = stops[r["stop_id"]] ?: continue
             val sec = runCatching { hms(r["arrival_time"].orEmpty().ifBlank { r["departure_time"].orEmpty() }) }.getOrNull() ?: continue
-            seqs.getOrPut(tid) { ArrayList() }.add((r["stop_sequence"]?.toIntOrNull() ?: 0) to StopTime(st.first, st.second, st.third, sec))
+            seqs.getOrPut(tid) { ArrayList() }.add((r["stop_sequence"]?.toIntOrNull() ?: 0) to StopTime(st.first, st.second, st.third, sec, name))
         }
         return Static(seqs.mapValues { (tid, v) -> Trip(tripRoute[tid] ?: "", v.sortedBy { it.first }.map { it.second }) })
     }
@@ -159,6 +159,14 @@ object NaimLive {
                   val tripKey: Long, val lat: Double, val lon: Double)
 
     @Volatile private var cache: Pair<Long, List<Vehicle>>? = null
+    private val tripOfKey = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    /** The stops of a live Na'im bus's trip (code, position, name), for drawing its route on the Live map. */
+    fun tripStops(ctx: Context, tripKey: Long): List<Moovit.Stop> {
+        val id = tripOfKey[tripKey] ?: return emptyList()
+        val trip = loadStatic(ctx)?.trips?.get(id) ?: return emptyList()
+        return trip.times.map { Moovit.Stop(it.code, it.lat, it.lon, it.name) }
+    }
 
     private fun live(): List<Vehicle> {
         val now = System.currentTimeMillis()
@@ -193,7 +201,9 @@ object NaimLive {
                 val s = trip.times[k]
                 if (s.code !in want) continue
                 val sched = midnight + s.sec
-                out.add(Arrival(trip.short, dest, s.code, sched + delay, sched, v.tripId.hashCode().toLong() and 0xffffffffL, v.lat, v.lon))
+                val key = v.tripId.hashCode().toLong() and 0xffffffffL
+                tripOfKey[key] = v.tripId
+                out.add(Arrival(trip.short, dest, s.code, sched + delay, sched, key, v.lat, v.lon))
             }
         }
         return out

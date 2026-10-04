@@ -39,7 +39,7 @@ fun UpdatePrompt(model: KavModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap4)) {
                 AppIcon(56.dp)
                 Column {
-                    Text("Kav", fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                    Text("AltKav+", fontSize = 20.sp, color = K.text, fontWeight = FontWeight.SemiBold)
                     Text(
                         T.ltr("${Updates.installedVersion(ctx)} → ${release.version}"),
                         fontSize = 15.sp, color = K.accent, fontWeight = FontWeight.Medium,
@@ -68,7 +68,7 @@ private fun AppIcon(size: androidx.compose.ui.unit.Dp) {
             modifier = Modifier.fillMaxSize().scale(1.5f),
         )
         Image(
-            painterResource(R.drawable.ic_launcher_foreground), contentDescription = "Kav",
+            painterResource(R.drawable.ic_launcher_foreground), contentDescription = "AltKav+",
             modifier = Modifier.fillMaxSize().scale(1.5f),
         )
     }

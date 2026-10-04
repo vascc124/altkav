@@ -124,7 +124,7 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
                 when {
                     here == null -> item {
                         Column(Modifier.padding(horizontal = K.gap4, vertical = K.gap3)) {
-                        Note(if (locating) T("Waiting for a fix…", "ממתינים למיקום…") else T("Kav does not know where you are yet.", "Kav עדיין לא יודע איפה אתם."))
+                        Note(if (locating) T("Waiting for a fix…", "ממתינים למיקום…") else T("AltKav+ does not know where you are yet.", "AltKav+ עדיין לא יודעת איפה אתם."))
                         Spacer(Modifier.height(K.gap3))
                         Chip(if (locating) T("Locating…", "מאתרים מיקום…") else T("Use my location", "השתמשו במיקום שלי"), locating) {
                             if (hasLocationPermission(ctx)) {

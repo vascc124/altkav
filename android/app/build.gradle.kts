@@ -15,11 +15,14 @@ android {
         applicationId = "uk.noammm.kav.plus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2104 // upstream versionCode × 100 + Kav+ build
+        versionCode = 2105 // upstream versionCode × 100 + Kav+ build
         // "<upstream version>.p<n>": Updates.isNewer compares the digits, so 2.1.p2 > 2.1.p1
         // and the next upstream merge (2.2.p1) still counts as newer.
-        versionName = "2.1.p4"
+        versionName = "2.1.p5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Kav+: when the bundled timetable was built, so TimetableUpdate only fetches a newer week.
+        val bundled = file("src/main/assets/il.kav").takeIf { it.exists() }?.lastModified() ?: 0L
+        buildConfigField("long", "TIMETABLE_BUILT_MS", "${bundled}L")
         // MapLibre's renderer is native code. Every phone Kav can reach is arm64;
         // x86_64 stays so the release APK still installs on the emulator.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
@@ -57,7 +60,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

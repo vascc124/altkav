@@ -17,10 +17,9 @@ object TimetableUpdate {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("kavplus", Context.MODE_PRIVATE)
     fun file(ctx: Context) = File(File(ctx.filesDir, "timetable"), "il.kav.gz")
 
-    // When the timetable in use was built: the downloaded one's date, else when this APK was installed.
+    // When the timetable in use was built: the downloaded one's date, else the APK's own bundle's.
     fun inUseSince(ctx: Context): Long =
-        prefs(ctx).getLong("builtMs", 0L).takeIf { it > 0 && file(ctx).exists() }
-            ?: runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime }.getOrDefault(0L)
+        maxOf(prefs(ctx).getLong("builtMs", 0L).takeIf { file(ctx).exists() } ?: 0L, uk.noammm.kav.BuildConfig.TIMETABLE_BUILT_MS)
 
     // A downloaded timetable that can't be read is dropped, and the APK's is used again.
     fun discard(ctx: Context) {

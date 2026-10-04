@@ -74,11 +74,27 @@ object Curlbus {
     }
 
     // One stop's live arrivals for the departure board: line number, destination stop code and ETA (Unix s).
-    class BoardArrival(val line: String, val destCode: Int, val etaUtc: Long, val tracked: Boolean)
+    class BoardArrival(
+        val line: String, val destCode: Int, val etaUtc: Long, val tracked: Boolean,
+        val lat: Double = 0.0, val lon: Double = 0.0, val vehicle: String = "",
+    )
 
     fun boardArrivals(code: Int): List<BoardArrival>? {
         if (code <= 0 || (skip[code] ?: 0L) >= System.currentTimeMillis()) return null
-        val list = visits(listOf(code)).optJSONArray(code.toString()) ?: return emptyList()
+        return boardArrivals(listOf(code))[code]
+    }
+
+    // Several stops in one request, keyed by stop code. Stops curlbus can't answer for are absent.
+    fun boardArrivals(codes: List<Int>): Map<Int, List<BoardArrival>> {
+        val now = System.currentTimeMillis()
+        val want = codes.filter { it > 0 && (skip[it] ?: 0L) < now }.distinct().take(MAX_STOPS)
+        if (want.isEmpty()) return emptyMap()
+        val found = visits(want)
+        return found.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to parseBoard(found.optJSONArray(k)) } }.toMap()
+    }
+
+    private fun parseBoard(list: org.json.JSONArray?): List<BoardArrival> {
+        if (list == null) return emptyList()
         return (0 until list.length()).mapNotNull { i ->
             val v = list.optJSONObject(i) ?: return@mapNotNull null
             BoardArrival(
@@ -86,6 +102,9 @@ object Curlbus {
                 destCode = v.optString("destination_id").toIntOrNull() ?: return@mapNotNull null,
                 etaUtc = time(v.optString("eta")) ?: return@mapNotNull null,
                 tracked = v.optJSONObject("location") != null,
+                lat = v.optJSONObject("location")?.optString("lat")?.toDoubleOrNull() ?: 0.0,
+                lon = v.optJSONObject("location")?.optString("lon")?.toDoubleOrNull() ?: 0.0,
+                vehicle = v.optString("vehicle_ref"),
             )
         }
     }

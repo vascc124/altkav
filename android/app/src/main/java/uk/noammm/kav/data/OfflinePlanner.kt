@@ -347,6 +347,48 @@ object OfflinePlanner {
 
     const val SECTION = "Planned on your phone"
 
+    fun isOffline(trip: Moovit.Itinerary) = trip.guid.startsWith("kavplus-offline")
+
+    // ---- live times for trips planned here, from the Ministry's feed via curlbus ----
+
+    /**
+     * Live arrivals at each ride's boarding stop. A bus of the ride's line heading to the same last stop
+     * takes the ride's trip when its ETA is from 3 min before to 40 min after the planned departure;
+     * the others of that line still show, as the buses after it.
+     */
+    fun refreshLive(net: Net, trips: List<Moovit.Itinerary>, prev: Moovit.Resolved): Moovit.Resolved {
+        val rides = trips.filter(::isOffline).flatMap { it.rides }.filter { it.lineId < 0 && it.fromStop < 0 && it.tripId < 0 }
+        if (rides.isEmpty()) return prev
+        val codeOf = { id: Int -> net.code.getOrElse(netStop(id)) { 0 } }
+        val boards = Curlbus.boardArrivals(rides.map { codeOf(it.fromStop) }.distinct())
+        val live = HashMap<Moovit.ArrivalKey, Moovit.Arrival>()
+        val patterns = HashMap<Int, List<Int>>()
+        for ((n, ride) in rides.withIndex()) {
+            val list = boards[codeOf(ride.fromStop)] ?: continue
+            val trip = ((-ride.tripId - 1) / 4).toInt()
+            val number = prev.line(ride.lineId)?.number ?: continue
+            val dest = net.code.getOrElse(net.tripLast(trip)) { 0 }
+            val same = list.filter { it.line == number && it.destCode == dest }.sortedBy { it.etaUtc }
+            if (same.isEmpty()) continue
+            val pid = -(n + 1)
+            patterns[pid] = ride.stops
+            val mine = same.filter { it.etaUtc - ride.dep in -180L..2400L }.minByOrNull { kotlin.math.abs(it.etaUtc - ride.dep) }
+            for ((k, a) in same.withIndex()) {
+                val isMine = a === mine
+                val arrival = Moovit.Arrival(
+                    stopId = ride.fromStop, lineId = ride.lineId,
+                    tripId = if (isMine) ride.tripId else -(1_000_000_000L + n * 100L + k),
+                    staticUtc = if (isMine) ride.dep else a.etaUtc, rtUtc = a.etaUtc, statisticalUtc = 0L,
+                    status = 0, certainty = 0, traffic = if (isMine && a.etaUtc - ride.dep >= 180) 2 else 0,
+                    frequency = false, rtDropped = false, tracked = a.tracked, lat = a.lat, lon = a.lon,
+                    vehicleId = a.vehicle, patternId = pid,
+                )
+                live[arrival.key] = arrival
+            }
+        }
+        return Moovit.Resolved(prev.lines, prev.stops, prev.routeTypes, live, prev.shapes, Curlbus.POLL_SECS, prev.patterns + patterns)
+    }
+
     private fun rideCount(f: Found) = f.steps.count { it.ride != null }
 
     private fun same(a: Found, b: Found): Boolean {

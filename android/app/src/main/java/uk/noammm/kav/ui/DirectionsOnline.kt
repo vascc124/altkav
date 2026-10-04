@@ -245,6 +245,16 @@ fun DirectionsOnline(model: KavModel) {
         if (!showResults || raw.isEmpty() || (active != null && open?.trip === active)) return@LaunchedEffect
         val otherTrips = raw.filterNot { it === active }
         if (otherTrips.isEmpty()) return@LaunchedEffect
+        // Kav+: trips planned on the phone take their live times from curlbus.
+        if (otherTrips.all(uk.noammm.kav.data.OfflinePlanner::isOffline)) {
+            val net = model.net ?: return@LaunchedEffect
+            while (true) {
+                withContext(Dispatchers.IO) {
+                    runCatching { uk.noammm.kav.data.OfflinePlanner.refreshLive(net, otherTrips, resolved) }.getOrNull()
+                }?.let { resolved = it }
+                kotlinx.coroutines.delay(uk.noammm.kav.data.Curlbus.POLL_SECS * 1000L)
+            }
+        }
         while (true) {
             kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
             val s = runCatching { Online.open() }.getOrNull() ?: break

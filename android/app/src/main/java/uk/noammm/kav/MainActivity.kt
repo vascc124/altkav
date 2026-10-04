@@ -522,6 +522,17 @@ private fun Shell(model: KavModel) {
     LaunchedEffect(model, model.activeJourney?.trip) {
         while (true) {
             val journey = model.activeJourney ?: break
+            // Kav+: a trip planned on the phone follows its buses through curlbus, not Moovit.
+            if (uk.noammm.kav.data.OfflinePlanner.isOffline(journey.trip)) {
+                val net = model.net
+                if (net != null) withContext(Dispatchers.IO) {
+                    runCatching { uk.noammm.kav.data.OfflinePlanner.refreshLive(net, listOf(journey.trip), journey.resolved) }.getOrNull()
+                }?.let { fresh ->
+                    model.activeJourney?.takeIf { it.trip == journey.trip }?.let { model.activeJourney = it.copy(resolved = fresh) }
+                }
+                delay(uk.noammm.kav.data.Curlbus.POLL_SECS * 1000L)
+                continue
+            }
             val session = try {
                 Online.open(journey.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.first() ?: model.here ?: (32.0759 to 34.7745))
             } catch (e: CancellationException) {

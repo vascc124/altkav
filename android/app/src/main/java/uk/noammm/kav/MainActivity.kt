@@ -408,6 +408,9 @@ private fun Root() {
     val app = ctx.applicationContext
     val model: KavModel = viewModel { KavModel(Loaded.net, app) }
     LaunchedEffect(model) { if (!model.updateChecked) model.checkForUpdate(app) }
+    // Relabels the launcher shortcuts when the language changes, and covers favourites
+    // restored from a backup or saved before Kav+ added shortcuts.
+    LaunchedEffect(T.lang) { withContext(Dispatchers.IO) { Shortcuts.sync(app, Prefs.favourites(app)) } }
     var pickLook by remember { mutableStateOf(Prefs.pickLook(ctx)) }
     var pickSupport by remember { mutableStateOf(Prefs.pickSupport(ctx)) }
     Box(Modifier.fillMaxSize()) {
@@ -1167,7 +1170,8 @@ object Prefs {
     fun setAccent(ctx: Context, argb: Int) = store(ctx).edit().putInt("accent", argb).apply()
 
     fun lang(ctx: Context): Lang =
-        Lang.entries.firstOrNull { it.code == store(ctx).getString("lang", null) } ?: Lang.EN
+        // Kav+ starts in Hebrew; English stays one tap away in Settings.
+        Lang.entries.firstOrNull { it.code == store(ctx).getString("lang", null) } ?: Lang.HE
     fun setLang(ctx: Context, lang: Lang) = store(ctx).edit().putString("lang", lang.code).apply()
 
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
@@ -1317,5 +1321,6 @@ object Prefs {
             )
         }
         store(ctx).edit().putString("favourites", arr.toString()).apply()
+        Shortcuts.sync(ctx, list)
     }
 }

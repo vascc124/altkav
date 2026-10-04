@@ -58,6 +58,7 @@ class TripService : Service() {
     override fun onCreate() {
         super.onCreate()
         T.lang = Prefs.lang(this)
+        uk.noammm.kav.data.NaimLive.app = applicationContext
         ensureChannel(this)
         running = this
     }

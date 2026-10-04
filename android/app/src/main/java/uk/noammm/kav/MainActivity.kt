@@ -141,6 +141,7 @@ class MainActivity : ComponentActivity() {
             addOnPictureInPictureModeChangedListener { Pip.active = it.isInPictureInPictureMode }
         }
         T.lang = Prefs.lang(this)
+        uk.noammm.kav.data.NaimLive.app = applicationContext
         // Restored, or reopened from Recents: the link or backup was already handled.
         val fresh = savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
         if (fresh && !PendingBackup.offer(this, intent?.data)) {
@@ -418,6 +419,8 @@ private fun Root() {
     LaunchedEffect(T.lang) { withContext(Dispatchers.IO) { Shortcuts.sync(app, Prefs.favourites(app)) } }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
+            runCatching { uk.noammm.kav.data.NaimLive.refreshStatic(app) }
+                .onFailure { android.util.Log.w("KavNaim", "static feed refresh failed", it) }
             runCatching { uk.noammm.kav.data.TimetableUpdate.check(app) }
                 .onFailure { android.util.Log.w("KavTimetable", "check failed", it) }
                 .onSuccess { if (it) android.util.Log.i("KavTimetable", "new timetable saved for next start") }

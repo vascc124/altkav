@@ -144,6 +144,62 @@ flush(cur, seq)
 # tools/naim_times.json (tools/naim_moovit.py) has, per direction, its stops by MOT code and the Friday and
 # Saturday first-stop departures with each stop's offset. They join as one more operator; stops the feed
 # doesn't have are added at Moovit's position. Saturday's list starts with Friday night's buses after midnight.
+# AltKav+: the official Na'im BaSofash GTFS from the Tel Aviv municipality (tools/fetch.sh), exact times for
+# all its lines (705-729). Its trip ids are also what the municipality's GTFS-RT vehicle feed refers to.
+NAIM_GTFS = os.environ.get("KAV_NAIM_GTFS", os.path.join(HERE, ".cache", "naim-gtfs.zip"))
+naim_official = False
+if os.path.exists(NAIM_GTFS) and os.environ.get("KAV_NAIM", "1") != "0":
+    nz = zipfile.ZipFile(NAIM_GTFS)
+    def nopen(n): return io.TextIOWrapper(nz.open(n), encoding="utf-8-sig", newline="")
+    n_active = {}
+    for r in csv.DictReader(nopen("calendar.txt")):
+        s0, e0 = r["start_date"], r["end_date"]
+        sd = datetime.date(int(s0[:4]), int(s0[4:6]), int(s0[6:8])); ed = datetime.date(int(e0[:4]), int(e0[4:6]), int(e0[6:8]))
+        m = 0
+        for i, day in enumerate(DAYS):
+            if sd <= day <= ed and r[DAYCOLS[i]] == "1": m |= 1 << i
+        n_active[r["service_id"]] = m
+    if "calendar_dates.txt" in nz.namelist():
+        for r in csv.DictReader(nopen("calendar_dates.txt")):
+            d0 = r["date"]; day = datetime.date(int(d0[:4]), int(d0[4:6]), int(d0[6:8]))
+            if day in DAYS:
+                bitd = 1 << DAYS.index(day)
+                n_active[r["service_id"]] = (n_active.get(r["service_id"], 0) | bitd) if r["exception_type"] == "1" else (n_active.get(r["service_id"], 0) & ~bitd)
+    by_code = {}
+    for i, st in enumerate(stops):
+        if st[3] and st[3] not in by_code: by_code[st[3]] = i
+    if "" not in city_idx:
+        city_idx[""] = len(cities); cities.append("")
+    n_stop = {}
+    for r in csv.DictReader(nopen("stops.txt")):
+        code = int(r["stop_code"]) if r.get("stop_code", "").isdigit() else 0
+        if code in by_code: n_stop[r["stop_id"]] = by_code[code]
+        else:
+            n_stop[r["stop_id"]] = len(stops)
+            if code: by_code[code] = len(stops)
+            stops.append((r["stop_name"].strip(), float(r["stop_lat"]), float(r["stop_lon"]), code, city_idx[""]))
+    n_agency = len(agencies); agencies.append('נעים בסופ"ש')
+    n_route = {}
+    for r in csv.DictReader(nopen("routes.txt")):
+        n_route[r["route_id"]] = len(routes)
+        routes.append((r["route_short_name"].strip(), r["route_long_name"].strip(), int(r["route_type"] or 3), n_agency))
+    n_trip = {}
+    for r in csv.DictReader(nopen("trips.txt")):
+        m = n_active.get(r["service_id"], 0)
+        if m and r["route_id"] in n_route: n_trip[r["trip_id"]] = (n_route[r["route_id"]], m)
+    seqs = collections.defaultdict(list)
+    for r in csv.DictReader(nopen("stop_times.txt")):
+        if r["trip_id"] in n_trip and r["stop_id"] in n_stop:
+            seqs[r["trip_id"]].append((int(r["stop_sequence"]), hms(r["arrival_time"]), hms(r["departure_time"]), n_stop[r["stop_id"]]))
+    n0 = len(kept)
+    for tid, sq in seqs.items():
+        sq.sort()
+        if len(sq) >= 2:
+            ridx, m = n_trip[tid]
+            kept.append((ridx, m, [(a, d, si) for _, a, d, si in sq]))
+    naim_official = True
+    print(f"Na'im BaSofash (official GTFS): {len(n_route)} routes, {len(kept) - n0:,} trips")
+
 NAIM = os.path.join(HERE, "tools", "naim_times.json")
 if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
     naim = json.load(open(NAIM, encoding="utf-8"))
@@ -161,6 +217,8 @@ if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
     bit = {k: 1 << i for i, k in enumerate(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])}  # bit 0 = Sunday
     n0 = len(kept)
     for d in naim["directions"]:
+        if naim_official and d.get("agency", 'נעים בסופ"ש') == 'נעים בסופ"ש':
+            continue
         idx = []
         for st in d["stops"]:
             code = st.get("code") or 0

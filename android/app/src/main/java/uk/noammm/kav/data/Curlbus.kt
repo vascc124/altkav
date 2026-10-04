@@ -14,6 +14,8 @@ object Curlbus {
     private const val BASE = "https://curlbus.app/"
     const val MAX_STOPS = 12
     const val POLL_SECS = 30
+    const val NAIM_AGENCY = -7
+    private const val NAIM_LINE_BASE = -2_000_000
 
     private val iso = ThreadLocal.withInitial { SimpleDateFormat("yyyy-MM-dd HH:mm:ssXXX", Locale.US) }
 
@@ -31,7 +33,9 @@ object Curlbus {
     fun stopArrivals(codes: List<Int>, hebrew: Boolean): Result {
         val now = System.currentTimeMillis()
         val want = codes.filter { it > 0 && (skip[it] ?: 0L) < now }.distinct().take(MAX_STOPS)
-        val found = if (want.isEmpty()) JSONObject() else visits(want)
+        // Na'im BaSofash buses aren't in the MOT feed; they come from the municipality's own (NaimLive).
+        val naim = NaimLive.app?.let { NaimLive.arrivals(it, codes) }.orEmpty()
+        val found = if (want.isEmpty()) JSONObject() else try { visits(want) } catch (e: Exception) { if (naim.isEmpty()) throw e else JSONObject() }
         val arrivals = HashMap<Moovit.ArrivalKey, Moovit.Arrival>()
         val lines = HashMap<Int, Moovit.LineInfo>()
         val modes = HashMap<Int, Int>()
@@ -70,6 +74,18 @@ object Curlbus {
                 if (agency >= 0) modes[agency] = modeOf(agency)
             }
         }
+        for (a in naim) {
+            val lineId = NAIM_LINE_BASE - (a.line.hashCode() and 0xfffff)
+            val arrival = Moovit.Arrival(
+                stopId = a.stopCode, lineId = lineId, tripId = -a.tripKey,
+                staticUtc = a.schedUtc, rtUtc = a.etaUtc, statisticalUtc = 0L,
+                status = 0, certainty = 0, traffic = if (a.etaUtc - a.schedUtc >= 180) 2 else 0, frequency = false, rtDropped = false,
+                tracked = true, lat = a.lat, lon = a.lon,
+            )
+            arrivals[arrival.key] = arrival
+            lines.getOrPut(lineId) { Moovit.LineInfo(groupId = lineId, number = a.line, agencyId = NAIM_AGENCY, origin = "", destination = "", caption = if (hebrew) "נעים בסופ\"ש" else "Na'im BaSofash") }
+            modes[NAIM_AGENCY] = 3
+        }
         return Result(arrivals, lines, modes)
     }
 
@@ -80,7 +96,7 @@ object Curlbus {
     )
 
     fun boardArrivals(code: Int): List<BoardArrival>? {
-        if (code <= 0 || (skip[code] ?: 0L) >= System.currentTimeMillis()) return null
+        if (code <= 0) return null
         return boardArrivals(listOf(code))[code]
     }
 
@@ -88,9 +104,12 @@ object Curlbus {
     fun boardArrivals(codes: List<Int>): Map<Int, List<BoardArrival>> {
         val now = System.currentTimeMillis()
         val want = codes.filter { it > 0 && (skip[it] ?: 0L) < now }.distinct().take(MAX_STOPS)
-        if (want.isEmpty()) return emptyMap()
-        val found = visits(want)
-        return found.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to parseBoard(found.optJSONArray(k)) } }.toMap()
+        val naim = NaimLive.app?.let { NaimLive.arrivals(it, codes) }.orEmpty()
+            .groupBy({ it.stopCode }, { BoardArrival(it.line, it.destCode, it.etaUtc, true, it.lat, it.lon) })
+        if (want.isEmpty()) return naim
+        val found = try { visits(want) } catch (e: Exception) { if (naim.isEmpty()) throw e else JSONObject() }
+        val mot = found.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to parseBoard(found.optJSONArray(k)) } }.toMap()
+        return (mot.keys + naim.keys).associateWith { mot[it].orEmpty() + naim[it].orEmpty() }
     }
 
     private fun parseBoard(list: org.json.JSONArray?): List<BoardArrival> {

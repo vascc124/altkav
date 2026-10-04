@@ -17,7 +17,7 @@ HELPER = "http://127.0.0.1:9333"
 AGENCIES = [
     (2910830, 'נעים בסופ"ש', r"7\d\d", ["fri", "sat"]),            # Tel Aviv-Yafo: the Na'im BaSofash lines
     (3412685, "עיריית רמת גן", r"[^/]+?", ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]),  # Savbus
-    (3799531, "עיריית חולון", r"[^/]+?", ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]),
+    # Holon (3799531) is left out: its Sokolov shuttle still shows on Moovit but hasn't run for years.
 ]
 WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 TZ = datetime.timezone(datetime.timedelta(hours=3))  # Israel summer time; offsets are kept relative anyway

@@ -13,7 +13,13 @@ import datetime, json, os, re, statistics, sys, time, urllib.parse, urllib.reque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HELPER = "http://127.0.0.1:9333"
-AGENCY = "https://moovitapp.com/index/en/public_transit-lines-Israel-1-2910830"
+# Municipal lines the MOT feed doesn't carry: (Moovit agency id, operator name in the bundle, line filter, days).
+AGENCIES = [
+    (2910830, 'נעים בסופ"ש', r"7\d\d", ["fri", "sat"]),            # Tel Aviv-Yafo: the Na'im BaSofash lines
+    (3412685, "עיריית רמת גן", r"[^/]+?", ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]),  # Savbus
+    (3799531, "עיריית חולון", r"[^/]+?", ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]),
+]
+WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 TZ = datetime.timezone(datetime.timedelta(hours=3))  # Israel summer time; offsets are kept relative anyway
 
 
@@ -36,15 +42,19 @@ def state():
     return json.loads(raw) if raw else None
 
 
-def line_groups():
-    goto(AGENCY)
-    links = js('[...new Set([...document.querySelectorAll("a")].map(a=>a.href).filter(h=>/public_transit-line-7\\d\\d-Israel-1-2910830-/.test(h)))].join("\\n")')
-    out = []
-    for h in links.split("\n"):
-        m = re.search(r"public_transit-line-(7\d\d)-Israel-1-2910830-(\d+)-", h)
+def line_groups(agency, pattern):
+    goto(f"https://moovitapp.com/index/en/public_transit-lines-Israel-1-{agency}")
+    links = js('[...new Set([...document.querySelectorAll("a")].map(a=>a.href))].join(" ")')
+    names = {}
+    for h in links.split(" "):
+        m = re.search(rf"line-({pattern})-Israel-1-{agency}-(\d+)-0$", urllib.parse.unquote(h))
         if m:
-            out.append((m.group(1), int(m.group(2))))
-    return sorted(set(out))
+            name, g = m.group(1).replace("_", " "), int(m.group(2))
+            name = {"blue savbus": "סבבוס כחול", "green savbus": "סבבוס ירוק"}.get(name, name)  # English-only slugs
+            # The index links each line under its English and its Hebrew slug; keep the Hebrew one.
+            if g not in names or re.search("[֐-׿]", name):
+                names[g] = name
+    return sorted(((n, g) for g, n in names.items()), key=lambda x: x[1])
 
 
 def day_offset(d):
@@ -75,13 +85,14 @@ def offsets(arrivals, stops):
 
 
 def main():
-    groups = line_groups()
-    print(len(groups), "Moovit line groups:", " ".join(f"{n}/{g}" for n, g in groups))
-    days = {"fri": next_weekday(4), "sat": next_weekday(5)}
     directions = {}
-    for n, g in groups:
+    for agency, agency_name, pattern, day_keys in AGENCIES:
+      groups = line_groups(agency, pattern)
+      print(agency_name, len(groups), "Moovit line groups:", " ".join(f"{n}/{g}" for n, g in groups))
+      days = {k: next_weekday(WEEKDAY[k]) for k in day_keys}
+      for n, g in groups:
         for key, d in days.items():
-            goto(f"https://moovitapp.com/tripplan/israel-1/lines/{n}/{g}/he?dayOffset={day_offset(d)}")
+            goto(f"https://moovitapp.com/tripplan/israel-1/lines/{urllib.parse.quote(n)}/{g}/he?dayOffset={day_offset(d)}")
             st = state()
             if not st:
                 print("  no state for", n, g, key, "- stopping"); sys.exit(1)
@@ -94,7 +105,7 @@ def main():
                     first, offs = offsets(opt.get("stopArrivals", {}), stops)
                     k = f"{n}:{opt['lineId']}"
                     e = directions.setdefault(k, {
-                        "line": n, "group": g, "moovitLine": opt["lineId"], "title": dr.get("lineTitle", ""),
+                        "line": n, "group": g, "agency": agency_name, "moovitLine": opt["lineId"], "title": dr.get("lineTitle", ""),
                         "stops": [{"code": int(s["stopCode"]) if str(s.get("stopCode", "")).isdigit() else None,
                                    "name": s.get("name", ""),
                                    "at": [s["location"].get("latitude", 0) / 1e6, s["location"].get("longitude", 0) / 1e6]
@@ -106,7 +117,7 @@ def main():
                                                    for i, st in enumerate(stops)}}
                     print(f"  {n:>4} {key} {dr.get('lineTitle','')[:40]:<40} {len(stops):>3} stops {len(first):>3} departures")
     out = {"source": "moovitapp.com web line pages", "fetched": datetime.date.today().isoformat(),
-           "days": {k: v.isoformat() for k, v in days.items()}, "directions": list(directions.values())}
+           "directions": list(directions.values())}
     json.dump(out, open(os.path.join(HERE, "naim_times.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(len(directions), "directions -> tools/naim_times.json")
 

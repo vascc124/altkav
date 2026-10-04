@@ -617,6 +617,7 @@ private const val MARK = "mark"
 
 private fun cardChips(it: Moovit.Itinerary): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(2)
+    if (it.tags.contains(uk.noammm.kav.data.OfflinePlanner.LAST_TAG())) out.add("last" to uk.noammm.kav.data.OfflinePlanner.LAST_TAG())
     if (it.accessible) out.add("access" to T("Step-free", "נגיש לנכים"))
     if (Shown.co2 && it.co2g >= 0) out.add("co2" to co2(it.co2g))
     return out
@@ -634,7 +635,7 @@ private fun InfoChip(kind: String, label: String) {
             "access" -> { AccessibleGlyph(); Spacer(Modifier.width(5.dp)) }
             "co2" -> { GlobeGlyph(); Spacer(Modifier.width(5.dp)) }
         }
-        Text(label, fontSize = 12.sp, color = if (co2) K.text else K.muted)
+        Text(label, fontSize = 12.sp, color = if (kind == "last") K.accent else if (co2) K.text else K.muted)
     }
 }
 

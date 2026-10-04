@@ -295,8 +295,16 @@ object OfflinePlanner {
         // The same lines from another stop (a longer walk to the same bus) is the same choice: keep the best.
         val best = heads.groupBy { f -> f.steps.mapNotNull { it.ride?.let { r -> net.tripRoute[r.trip] } } }
             .values.map { g -> if (arriveBy) g.maxBy { it.dep } else g.minBy { cost(it) } }
-        val chosen = if (arriveBy) best.sortedByDescending { it.dep }.take(count)
-        else best.sortedWith(compareBy({ cost(it) }, { it.arr })).take(count)
+        // Late at night the scan happily waits for the morning: a change with an hour's wait, a trip three
+        // times the fastest, or a 04:44 option on a search at 00:33. Each filter applies only if it leaves
+        // something.
+        fun keepIf(list: List<Found>, ok: (Found) -> Boolean) = list.filter(ok).ifEmpty { list }
+        var sane = keepIf(best) { f -> maxWait(f) <= 45 * 60 }
+        val fastest = sane.minOf { it.arr - it.dep }
+        sane = keepIf(sane) { f -> f.arr - f.dep <= maxOf(fastest * 17 / 10, fastest + 45 * 60) }
+        if (!arriveBy) { val first = sane.minOf { it.dep }; sane = keepIf(sane) { f -> f.dep <= first + 2 * 3600 } }
+        val chosen = if (arriveBy) sane.sortedByDescending { it.dep }.take(count)
+        else sane.sortedWith(compareBy({ cost(it) }, { it.arr })).take(count)
 
         val lines = LinkedHashMap<Int, Moovit.LineInfo>()
         val stops = LinkedHashMap<Int, Moovit.StopInfo>()
@@ -379,8 +387,11 @@ object OfflinePlanner {
                 } else merged.add(l)
             }
             legs.clear(); legs.addAll(merged.filter { it.kind != Moovit.LegKind.WALK || it.meters > 0 || it == merged.first() })
+            // No later bus of a ride's line from its stop before 04:00: say so, there's no next one to catch.
+            val last = f.steps.any { st -> st.ride?.let { lastOfDay(net, it, today) } == true }
             Moovit.Itinerary(
                 guid = "kavplus-offline-$n-${f.dep}", group = 2, legs = legs,
+                tags = if (last) listOf(LAST_TAG()) else emptyList(),
                 dep = legs.first().dep, arr = legs.last().arr,
                 section = SECTION,
             )
@@ -389,6 +400,29 @@ object OfflinePlanner {
     }
 
     const val SECTION = "Planned on your phone"
+
+    fun LAST_TAG() = uk.noammm.kav.ui.T("Last one today", "האחרון להיום")
+
+    private fun lastOfDay(net: Net, r: Ride, today: Int): Boolean {
+        val stop = net.stStop[r.boardK]
+        // The same line, not the same route id: the feed gives train runs a route each.
+        fun line(route: Int) = "${net.rAgency.getOrElse(route) { -1 }}|${net.rShort[route]}|${net.rLong[route]}"
+        val mine = line(net.tripRoute[r.trip])
+        val lastStop = net.tripLast(r.trip)
+        val days = intArrayOf(today, (today + 6) % 7, (today + 1) % 7)
+        // The coming 04:00, in today's seconds: tonight's if the ride is after midnight already.
+        val endOfNight = if (r.dep < 4 * 3600) 4 * 3600 else 28 * 3600
+        for (i in net.dStart[stop] until net.dStart[stop + 1]) {
+            val st = net.cST[net.dConn[i]]
+            val t = net.tripOf(st)
+            if (t == r.trip || line(net.tripRoute[t]) != mine && net.tripLast(t) != lastStop) continue
+            for (o in 0..2) {
+                val dep = net.stDep[st] + OFFSETS[o]
+                if (dep > r.dep && dep < endOfNight && net.runsOn(t, days[o])) return false
+            }
+        }
+        return true
+    }
 
     fun isOffline(trip: Moovit.Itinerary) = trip.guid.startsWith("kavplus-offline")
 
@@ -433,6 +467,12 @@ object OfflinePlanner {
     }
 
     private fun rideCount(f: Found) = f.steps.count { it.ride != null }
+
+    // The longest wait between getting off one vehicle and onto the next.
+    private fun maxWait(f: Found): Int {
+        val rides = f.steps.mapNotNull { it.ride }
+        return rides.zipWithNext { a, b -> b.dep - a.arr }.maxOrNull() ?: 0
+    }
 
     // Drops a last ride of 4 min or less, and the walk to it, when walking on from where the trip stood
     // before it is within reach and costs at most 6 min more.

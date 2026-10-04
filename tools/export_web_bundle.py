@@ -151,10 +151,14 @@ if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
     for i, st in enumerate(stops):
         if st[3] and st[3] not in by_code:
             by_code[st[3]] = i
-    agency_n = len(agencies); agencies.append('נעים בסופ"ש')
+    agency_of = {}
+    def agency_n(name):
+        if name not in agency_of:
+            agency_of[name] = len(agencies); agencies.append(name)
+        return agency_of[name]
     if "" not in city_idx:
         city_idx[""] = len(cities); cities.append("")
-    bit = {"fri": 1 << 5, "sat": 1 << 6}          # bit 0 = Sunday
+    bit = {k: 1 << i for i, k in enumerate(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])}  # bit 0 = Sunday
     n0 = len(kept)
     for d in naim["directions"]:
         idx = []
@@ -169,7 +173,7 @@ if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
             else:
                 idx.append(None)
         r = len(routes)
-        routes.append((d["line"], d.get("title", "").replace("‎", "").replace("‏", ""), 3, agency_n))
+        routes.append((d["line"], d.get("title", "").replace("‎", "").replace("‏", ""), 3, agency_n(d.get("agency", 'נעים בסופ"ש'))))
         for key, day in d["days"].items():
             for dep in day["departures"]:
                 sq, last = [], 0
@@ -179,7 +183,7 @@ if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
                     sq.append((dep + last, dep + last, si))
                 if len(sq) >= 2:
                     kept.append((r, bit[key], sq))
-    print(f"Na'im BaSofash: {len(naim['directions'])} directions, {len(kept) - n0:,} weekend trips")
+    print(f"Municipal lines (Na'im BaSofash and others): {len(naim['directions'])} directions, {len(kept) - n0:,} trips")
 
 n_conn = sum(len(t[2]) - 1 for t in kept)
 n_st = sum(len(t[2]) for t in kept)

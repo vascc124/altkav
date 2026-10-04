@@ -164,11 +164,32 @@ fun SettingsScreen(model: KavModel, onClose: () -> Unit) {
 internal fun LookChoices(inset: Dp = 0.dp, heading: @Composable (String) -> Unit) {
     val ctx = LocalContext.current
     heading(T("look", "מראה"))
-    Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
-        for ((look, name) in listOf(Look.OLED to "OLED", Look.LIGHT to T("Light", "בהיר"), Look.DARK to T("Dark", "כהה"))) {
-            Chip(name, K.look == look) { K.applyTheme(look); Prefs.setLook(ctx, look) }
+    fun apply(look: Look) {
+        Prefs.setLook(ctx, look)
+        K.applyFor(ctx, look, androidx.compose.ui.graphics.Color(Prefs.accent(ctx)), Prefs.autoOled(ctx))
+    }
+    // AltKav+: the phone's own colours first, then Dusk, then Kav's looks.
+    @OptIn(ExperimentalLayoutApi::class)
+    FlowRow(Modifier.padding(horizontal = inset).fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(K.gap2), verticalArrangement = Arrangement.spacedBy(K.gap2)) {
+        for ((look, name) in listOf(
+            Look.YOU to T("Your phone's colours", "צבעי הטלפון"), Look.DUSK to T("Dusk", "דמדומים"),
+            Look.OLED to "OLED", Look.LIGHT to T("Light", "בהיר"), Look.DARK to T("Dark", "כהה"),
+        )) {
+            Chip(name, K.look == look) { apply(look) }
         }
     }
+    var autoOled by remember { mutableStateOf(Prefs.autoOled(ctx)) }
+    heading(T("battery saver", "חיסכון בסוללה"))
+    Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {
+        Chip(T("OLED black on Battery Saver", "שחור OLED בחיסכון בסוללה"), autoOled) {
+            autoOled = !autoOled; Prefs.setAutoOled(ctx, autoOled); apply(K.look)
+        }
+    }
+    if (K.saving) Text(
+        T("Battery Saver is on, so AltKav+ is in OLED black for now.", "החיסכון בסוללה פעיל, לכן AltKav+ בשחור OLED כרגע."),
+        fontSize = 11.sp, color = K.dim, modifier = Modifier.padding(horizontal = inset + 2.dp),
+    )
     if (!liquidGlassReady) return
     heading(T("glass", "זכוכית"))
     Row(Modifier.padding(horizontal = inset).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(K.gap2)) {

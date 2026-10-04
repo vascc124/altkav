@@ -129,8 +129,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         Prefs.upgrade(this)
-        K.accent = Color(Prefs.accent(this))
-        K.applyTheme(Prefs.look(this))
+        applyLook()
         K.liquid = Prefs.liquidGlass(this)
         Shown.co2 = Prefs.showCo2(this)
         Moovit.shareLocation = !Prefs.privateSearch(this)
@@ -178,6 +177,34 @@ class MainActivity : ComponentActivity() {
         if (Pip.wanted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(2, 1)).build()) }
         }
+    }
+
+    // AltKav+: the look follows Battery Saver (OLED black) and, for YOU, the system's day and night. uiMode is a
+    // handled config change here, so the activity isn't recreated and the look is applied again by hand.
+    internal fun applyLook() =
+        K.applyFor(this, Prefs.look(this), androidx.compose.ui.graphics.Color(Prefs.accent(this)), Prefs.autoOled(this))
+
+    private val powerSave = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) = applyLook()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        applyLook()
+        androidx.core.content.ContextCompat.registerReceiver(
+            this, powerSave, android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+    }
+
+    override fun onStop() {
+        runCatching { unregisterReceiver(powerSave) }
+        super.onStop()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyLook()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -268,8 +295,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
         prefsVersion++
         favourites = Prefs.favourites(ctx)
         filters = Prefs.filters(ctx)
-        K.accent = Color(Prefs.accent(ctx))
-        K.applyTheme(Prefs.look(ctx))
+        K.applyFor(ctx, Prefs.look(ctx), Color(Prefs.accent(ctx)), Prefs.autoOled(ctx))
         K.liquid = Prefs.liquidGlass(ctx)
         Shown.co2 = Prefs.showCo2(ctx)
         Moovit.shareLocation = !Prefs.privateSearch(ctx)
@@ -1254,13 +1280,17 @@ object Prefs {
         Lang.entries.firstOrNull { it.code == store(ctx).getString("lang", null) } ?: Lang.HE
     fun setLang(ctx: Context, lang: Lang) = store(ctx).edit().putString("lang", lang.code).apply()
 
+    // AltKav+: OLED black while Battery Saver is on.
+    fun autoOled(ctx: Context): Boolean = store(ctx).getBoolean("autoOled", true)
+    fun setAutoOled(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("autoOled", on).apply()
+
     fun showCo2(ctx: Context): Boolean = store(ctx).getBoolean("showCo2", false)
     fun setShowCo2(ctx: Context, on: Boolean) = store(ctx).edit().putBoolean("showCo2", on).apply()
 
     private val looks = Look.entries.map { it.name.lowercase() }
 
     fun look(ctx: Context): Look =
-        Look.entries.firstOrNull { it.name.lowercase() == store(ctx).getString("look", null) } ?: Look.OLED
+        Look.entries.firstOrNull { it.name.lowercase() == store(ctx).getString("look", null) } ?: Look.YOU
     fun setLook(ctx: Context, look: Look) = store(ctx).edit().putString("look", look.name.lowercase()).apply()
 
     fun liquidGlass(ctx: Context): Boolean = liquidGlassReady && store(ctx).getBoolean("liquidGlass", true)

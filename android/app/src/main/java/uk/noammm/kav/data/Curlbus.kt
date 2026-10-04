@@ -73,6 +73,23 @@ object Curlbus {
         return Result(arrivals, lines, modes)
     }
 
+    // One stop's live arrivals for the departure board: line number, destination stop code and ETA (Unix s).
+    class BoardArrival(val line: String, val destCode: Int, val etaUtc: Long, val tracked: Boolean)
+
+    fun boardArrivals(code: Int): List<BoardArrival>? {
+        if (code <= 0 || (skip[code] ?: 0L) >= System.currentTimeMillis()) return null
+        val list = visits(listOf(code)).optJSONArray(code.toString()) ?: return emptyList()
+        return (0 until list.length()).mapNotNull { i ->
+            val v = list.optJSONObject(i) ?: return@mapNotNull null
+            BoardArrival(
+                line = v.optString("line_name"),
+                destCode = v.optString("destination_id").toIntOrNull() ?: return@mapNotNull null,
+                etaUtc = time(v.optString("eta")) ?: return@mapNotNull null,
+                tracked = v.optJSONObject("location") != null,
+            )
+        }
+    }
+
     // Halves a batch that fails until the stops behind it are found, so the rest still come back.
     private fun visits(codes: List<Int>): JSONObject {
         val (code, body) = fetch(codes)

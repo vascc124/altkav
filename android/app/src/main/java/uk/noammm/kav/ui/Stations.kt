@@ -26,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
+import uk.noammm.kav.data.Curlbus
 import uk.noammm.kav.data.Net
 import uk.noammm.kav.data.departuresAt
 import uk.noammm.kav.data.nearestStops
@@ -164,10 +165,15 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
 @Composable
 private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> Unit) {
     var t0 by remember(stop) { mutableIntStateOf(nowSec()) }
+    // Kav+: live arrivals for this stop from the Ministry's feed via curlbus; null when there are none.
+    var live by remember(stop) { mutableStateOf<List<Curlbus.BoardArrival>?>(null) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(stop, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
+                t0 = nowSec()
+                val code = net.code.getOrElse(stop) { 0 }
+                live = withContext(Dispatchers.IO) { runCatching { Curlbus.boardArrivals(code) }.getOrNull() }
                 t0 = nowSec()
                 delay(30_000)
             }
@@ -179,9 +185,31 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
         if (moovitId <= 0) moovitId = StopPhotos.idOf(net, stop) ?: -1
         looked = true
     }
-    val rows = remember(stop, t0) {
+    // Each live bus takes the scheduled run of its line to the same last stop closest to its ETA, from 3 min
+    // early to 40 min late. Runs already due stay listed only while a live bus still holds them.
+    val rows = remember(stop, t0, live) {
         val today = java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1
-        net.departuresAt(stop, t0, today)
+        val all = net.departuresAt(stop, t0 - 1800, today, limit = 90)
+        val nowUtc = System.currentTimeMillis() / 1000
+        val etaOf = HashMap<Int, Int>()
+        for (a in live.orEmpty().sortedBy { it.etaUtc }) {
+            val eta = (t0 + (a.etaUtc - nowUtc)).toInt()
+            var best = -1
+            var bestGap = Int.MAX_VALUE
+            for ((i, row) in all.withIndex()) {
+                if (i in etaOf) continue
+                val t = net.tripOf(net.cST[row.first])
+                if (net.rShort[net.tripRoute[t]] != a.line || net.code[net.tripLast(t)] != a.destCode) continue
+                val late = eta - row.second
+                if (late < -180 || late > 2400) continue
+                if (kotlin.math.abs(late) < bestGap) { best = i; bestGap = kotlin.math.abs(late) }
+            }
+            if (best >= 0) etaOf[best] = eta
+        }
+        all.withIndex().mapNotNull { (i, row) ->
+            val eta = etaOf[i]
+            if (eta == null && row.second < t0) null else Triple(row.first, row.second, eta)
+        }.sortedBy { it.third ?: it.second }.take(60)
     }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
@@ -198,7 +226,8 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                         listOf(
                             city.takeIf { it.isNotBlank() },
                             code.takeIf { it > 0 }?.let { T("stop $it", "תחנה $it") },
-                            T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת"),
+                            if (rows.any { it.third != null }) T("live times from the Ministry via curlbus", "זמנים בזמן אמת ממשרד התחבורה דרך curlbus")
+                            else T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת"),
                         ).filterNotNull().joinToString(" · "),
                         fontSize = 11.sp, color = K.dim,
                     )
@@ -221,7 +250,7 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
             start = K.gap2, end = K.gap2, bottom = LocalBottomBarInset.current,
         )) {
-            items(rows) { (c, dep) ->
+            items(rows) { (c, dep, eta) ->
                 val t = net.tripOf(net.cST[c])
                 val last = net.tripLast(t)
                 Row(
@@ -242,7 +271,9 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                         net.name[last], fontSize = 13.sp, color = K.muted,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                     )
-                    Text(
+                    if (eta != null) {
+                        Text(if (eta - t0 < 60) T("now", "עכשיו") else relative(eta, t0) ?: hhmm(eta), style = Mono, color = K.live)
+                    } else Text(
                         relative(dep, t0)
                             ?: if (dep >= 86_400 && dep - 86_400 >= t0) T("tomorrow ${hhmm(dep)}", "מחר ${hhmm(dep)}") else hhmm(dep),
                         style = Mono, color = K.scheduled,

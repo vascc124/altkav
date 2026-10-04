@@ -21,6 +21,14 @@ object TimetableUpdate {
     fun inUseSince(ctx: Context): Long =
         maxOf(prefs(ctx).getLong("builtMs", 0L).takeIf { file(ctx).exists() } ?: 0L, uk.noammm.kav.BuildConfig.TIMETABLE_BUILT_MS)
 
+    // The downloaded timetable, while it is newer than the one this APK carries. An app update with a newer
+    // bundle (new lines, say) wins over last week's download until the next weekly one arrives.
+    fun preferred(ctx: Context): File? {
+        val f = file(ctx)
+        val built = prefs(ctx).getLong("builtMs", 0L)
+        return f.takeIf { it.exists() && built > uk.noammm.kav.BuildConfig.TIMETABLE_BUILT_MS }
+    }
+
     // A downloaded timetable that can't be read is dropped, and the APK's is used again.
     fun discard(ctx: Context) {
         file(ctx).delete()

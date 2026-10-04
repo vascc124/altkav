@@ -155,6 +155,7 @@ object OfflinePlanner {
                 if (boardT[from] > tBest || rides[from] >= maxRides) continue
                 seenK[o][trip] = j; seenT[o][trip] = tBest; tripRides[o][trip] = rides[from] + 1
             }
+            if (seenK[o][trip] > j) continue // a stop time out of order in the data; don't ride backwards
             val to = stStop[j + 1]
             val a = stDep[j + 1] + OFFSETS[o]
             if (a < arrT[to]) {

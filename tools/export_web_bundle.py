@@ -7,7 +7,7 @@ which is what android/app/src/main/assets/il.kav is.
 
 Read-only over already-downloaded files; makes no network calls.
 """
-import csv, os, sys, math, re, datetime, struct, collections
+import csv, os, sys, math, re, datetime, struct, collections, json
 
 import zipfile, io
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,6 +140,47 @@ with openf("stop_times.txt") as f:
         rows += 1
         if rows % 5_000_000 == 0: print(f"  {rows:,} rows", flush=True)
 flush(cur, seq)
+# AltKav+: the Na'im BaSofash weekend lines, which the municipalities run outside the MOT feed.
+# tools/naim_times.json (tools/naim_moovit.py) has, per direction, its stops by MOT code and the Friday and
+# Saturday first-stop departures with each stop's offset. They join as one more operator; stops the feed
+# doesn't have are added at Moovit's position. Saturday's list starts with Friday night's buses after midnight.
+NAIM = os.path.join(HERE, "tools", "naim_times.json")
+if os.path.exists(NAIM) and os.environ.get("KAV_NAIM", "1") != "0":
+    naim = json.load(open(NAIM, encoding="utf-8"))
+    by_code = {}
+    for i, st in enumerate(stops):
+        if st[3] and st[3] not in by_code:
+            by_code[st[3]] = i
+    agency_n = len(agencies); agencies.append('נעים בסופ"ש')
+    if "" not in city_idx:
+        city_idx[""] = len(cities); cities.append("")
+    bit = {"fri": 1 << 5, "sat": 1 << 6}          # bit 0 = Sunday
+    n0 = len(kept)
+    for d in naim["directions"]:
+        idx = []
+        for st in d["stops"]:
+            code = st.get("code") or 0
+            if code in by_code:
+                idx.append(by_code[code])
+            elif st.get("at") and st["at"][0]:
+                by_code[code or -len(stops)] = len(stops)
+                idx.append(len(stops))
+                stops.append((st["name"], st["at"][0], st["at"][1], code, city_idx[""]))
+            else:
+                idx.append(None)
+        r = len(routes)
+        routes.append((d["line"], d.get("title", "").replace("‎", "").replace("‏", ""), 3, agency_n))
+        for key, day in d["days"].items():
+            for dep in day["departures"]:
+                sq, last = [], 0
+                for off, si in zip(day["offsets"], idx):
+                    if off is None or si is None: continue
+                    last = max(last, off)            # medians per stop can dip; a trip never goes back in time
+                    sq.append((dep + last, dep + last, si))
+                if len(sq) >= 2:
+                    kept.append((r, bit[key], sq))
+    print(f"Na'im BaSofash: {len(naim['directions'])} directions, {len(kept) - n0:,} weekend trips")
+
 n_conn = sum(len(t[2]) - 1 for t in kept)
 n_st = sum(len(t[2]) for t in kept)
 print(f"trips kept: {len(kept):,}   stop times: {n_st:,}   connections: {n_conn:,}")

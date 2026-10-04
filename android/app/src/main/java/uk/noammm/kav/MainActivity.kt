@@ -391,8 +391,8 @@ suspend fun loadNet(ctx: Context): Net = withContext(Dispatchers.Default) {
     netLoadMutex.withLock {
         Loaded.net ?: run {
             // Kav+: a newer weekly timetable downloaded by TimetableUpdate wins over the APK's.
-            val fresh = uk.noammm.kav.data.TimetableUpdate.file(ctx)
-            val n = (if (fresh.exists()) runCatching { fresh.inputStream().use { Net.read(it) } }
+            val fresh = uk.noammm.kav.data.TimetableUpdate.preferred(ctx)
+            val n = (if (fresh != null) runCatching { fresh.inputStream().use { Net.read(it) } }
                 .onFailure { uk.noammm.kav.data.TimetableUpdate.discard(ctx) }.getOrNull() else null)
                 ?: ctx.assets.open("il.kav").use { Net.read(it) }
             Loaded.store(n)

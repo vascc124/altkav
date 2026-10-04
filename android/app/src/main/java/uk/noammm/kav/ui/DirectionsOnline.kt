@@ -198,6 +198,36 @@ fun DirectionsOnline(model: KavModel) {
             planning = false
         } catch (e: Exception) {
             android.util.Log.e("KavPlan", "online plan failed", e)
+            // Kav+: Moovit won't plan, so plan on the phone from the timetable.
+            val offline = try {
+                val net = model.net ?: uk.noammm.kav.loadNet(ctx).also { model.net = it }
+                val types = routeTypesFor(filters).takeIf { it.size < Moovit.ALL_ROUTE_TYPES.size }.orEmpty()
+                withContext(Dispatchers.Default) {
+                    uk.noammm.kav.data.OfflinePlanner.plan(
+                        net, fromLL, toLL, departAt, arriveBy = timeType == Moovit.TIME_ARRIVAL, routeTypes = types,
+                    )
+                }
+            } catch (e2: kotlinx.coroutines.CancellationException) {
+                throw e2
+            } catch (e2: Exception) {
+                android.util.Log.e("KavPlan", "offline plan failed", e2)
+                null
+            }
+            if (offline != null && offline.first.isNotEmpty()) {
+                plan = Moovit.Plan(offline.first)
+                raw = offline.first
+                resolved = offline.second
+                planning = false
+                return@LaunchedEffect
+            }
+            if (offline != null) {
+                error = T(
+                    "No trip found in the timetable for that time. Try another departure time.",
+                    "לא נמצאה נסיעה בלוח הזמנים לשעה הזו. נסו שעת יציאה אחרת.",
+                )
+                planning = false
+                return@LaunchedEffect
+            }
             val reason = e.message ?: e.javaClass.simpleName
             error = if (uk.noammm.kav.hasNetwork(ctx)) T(
                 "Moovit's planner did not answer: $reason",

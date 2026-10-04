@@ -1,0 +1,329 @@
+package uk.noammm.kav.data
+
+import uk.noammm.kav.ui.ISRAEL
+import java.util.Calendar
+import kotlin.math.cos
+import kotlin.math.sqrt
+
+// Kav+: trip planning on the phone, from the timetable in the APK, for when Moovit won't plan.
+// A connection scan (earliest arrival) over the day's trips, after Kav 1.2's offline planner, dressed up
+// as the same Moovit.Itinerary the online path produces so the results, the trip detail and navigation
+// keep working. What it can't know it leaves out: fares, CO2, alerts, live times.
+//
+// Ids handed to the UI are negative so they can never be taken for Moovit's: stop s is -(s + 1),
+// route r is -(r + 1), and trip t on day offset o is -(t * 4 + o + 1).
+object OfflinePlanner {
+    private const val WALK_MPS = 1.2          // walking speed
+    private const val DETOUR = 1.3            // streets aren't straight lines
+    private const val TRANSFER_M = 350.0      // walk between stops up to this far to change
+    private const val ACCESS_M = 900.0        // walk to or from the first and last stop up to this far
+    private const val MIN_CHANGE = 120        // seconds to change vehicles at the same stop
+    private const val INF = Int.MAX_VALUE / 2
+
+    fun stopId(s: Int) = -(s + 1)
+    fun lineId(r: Int) = -(r + 1)
+    fun netStop(id: Int) = -id - 1
+
+    private fun walkSecs(m: Double) = (m * DETOUR / WALK_MPS).toInt()
+
+    // ---- walking links between nearby stops, built once per timetable ----
+
+    private class Links(val start: IntArray, val to: IntArray, val secs: IntArray)
+
+    @Volatile private var links: Links? = null
+    @Volatile private var linksFor: Net? = null
+
+    private fun links(net: Net): Links = links?.takeIf { linksFor === net } ?: synchronized(this) {
+        links?.takeIf { linksFor === net } ?: buildLinks(net).also { links = it; linksFor = net }
+    }
+
+    private fun metres(net: Net, a: Int, lat: Double, lon: Double): Double {
+        val dy = (net.lat[a] - lat) * 111_195.0
+        val dx = (net.lon[a] - lon) * 111_195.0 * cos(Math.toRadians(lat))
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    // Stops bucketed on a ~350 m grid, so neighbours are found in the 3×3 cells around a point.
+    private class Grid(net: Net, val cell: Double) {
+        val cells = HashMap<Long, IntArray>()
+        init {
+            val tmp = HashMap<Long, MutableList<Int>>()
+            for (s in 0 until net.nStops) tmp.getOrPut(key(net.lat[s], net.lon[s])) { ArrayList() }.add(s)
+            for ((k, v) in tmp) cells[k] = v.toIntArray()
+        }
+        fun key(lat: Double, lon: Double): Long {
+            val y = Math.floor(lat / cell).toLong(); val x = Math.floor(lon / cell).toLong()
+            return (y shl 32) xor (x and 0xffffffffL)
+        }
+        inline fun near(lat: Double, lon: Double, rings: Int, f: (Int) -> Unit) {
+            val y0 = Math.floor(lat / cell).toLong(); val x0 = Math.floor(lon / cell).toLong()
+            for (dy in -rings..rings) for (dx in -rings..rings) {
+                val k = ((y0 + dy) shl 32) xor ((x0 + dx) and 0xffffffffL)
+                cells[k]?.forEach(f)
+            }
+        }
+    }
+
+    @Volatile private var grid: Grid? = null
+    @Volatile private var gridFor: Net? = null
+    private fun grid(net: Net): Grid = grid?.takeIf { gridFor === net } ?: synchronized(this) {
+        grid?.takeIf { gridFor === net } ?: Grid(net, 0.0035).also { grid = it; gridFor = net }
+    }
+
+    private fun buildLinks(net: Net): Links {
+        val g = grid(net)
+        val n = net.nStops
+        val start = IntArray(n + 1)
+        val to = ArrayList<Int>(n * 8); val secs = ArrayList<Int>(n * 8)
+        for (s in 0 until n) {
+            start[s] = to.size
+            g.near(net.lat[s], net.lon[s], 1) { o ->
+                if (o != s) {
+                    val m = metres(net, o, net.lat[s], net.lon[s])
+                    if (m <= TRANSFER_M) { to.add(o); secs.add(walkSecs(m)) }
+                }
+            }
+        }
+        start[n] = to.size
+        return Links(start, to.toIntArray(), secs.toIntArray())
+    }
+
+    private fun around(net: Net, lat: Double, lon: Double, maxM: Double): List<Pair<Int, Int>> {
+        val out = ArrayList<Pair<Int, Int>>()
+        grid(net).near(lat, lon, 3) { s ->
+            val m = metres(net, s, lat, lon)
+            if (m <= maxM) out.add(s to walkSecs(m))
+        }
+        return out
+    }
+
+    // ---- the scan ----
+
+    private class Ride(val trip: Int, val day: Int, val boardK: Int, val alightK: Int, val dep: Int, val arr: Int)
+    private class Step(val ride: Ride?, val walkFrom: Int, val walkTo: Int, val dep: Int, val arr: Int)
+    private class Found(val dep: Int, val arr: Int, val steps: List<Step>)
+
+    // Day offsets: a trip running yesterday shows past midnight at its time minus a day, tomorrow's at plus.
+    private val OFFSETS = intArrayOf(0, -86_400, 86_400)
+
+    // Earliest arrival from [origin] after [t0] (seconds since today's Israel midnight).
+    private fun scan(
+        net: Net, links: Links, origin: List<Pair<Int, Int>>, egress: Map<Int, Int>,
+        t0: Int, today: Int, allowed: (Int) -> Boolean,
+    ): Found? {
+        val nS = net.nStops; val nT = net.tripRoute.size
+        val arrT = IntArray(nS) { INF }          // earliest arrival at a stop
+        val boardT = IntArray(nS) { INF }        // earliest a vehicle can be boarded there
+        val viaRide = arrayOfNulls<Ride>(nS)
+        val viaWalk = IntArray(nS) { -1 }        // stop walked from; -2 = from the origin
+        val seenK = Array(3) { IntArray(nT) { -1 } } // per day offset: the stop_time a trip was boarded at
+        val seenT = Array(3) { IntArray(nT) }
+        for ((s, w) in origin) if (t0 + w < arrT[s]) { arrT[s] = t0 + w; boardT[s] = t0 + w; viaWalk[s] = -2 }
+
+        var best = INF; var bestStop = -1
+        for ((s, w) in egress) if (arrT[s] < INF && arrT[s] + w < best) { best = arrT[s] + w; bestStop = s }
+
+        val days = intArrayOf(today, (today + 6) % 7, (today + 1) % 7)
+        val cST = net.cST; val stDep = net.stDep; val stStop = net.stStop
+        // One cursor per day offset over the connections, merged by time.
+        val cur = IntArray(3) { o -> lowerBound(net, t0 - OFFSETS[o]) }
+        while (true) {
+            var o = -1; var tBest = INF
+            for (k in 0..2) {
+                val i = cur[k]
+                if (i < cST.size) {
+                    val t = stDep[cST[i]] + OFFSETS[k]
+                    if (t < tBest) { tBest = t; o = k }
+                }
+            }
+            if (o < 0 || tBest >= best) break
+            val i = cur[o]++
+            val j = cST[i]
+            val trip = net.tripOf(j)
+            if (!net.runsOn(trip, days[o]) || !allowed(net.rType[net.tripRoute[trip]])) continue
+            val from = stStop[j]
+            if (seenK[o][trip] < 0) {
+                if (boardT[from] > tBest) continue
+                seenK[o][trip] = j; seenT[o][trip] = tBest
+            }
+            val to = stStop[j + 1]
+            val a = stDep[j + 1] + OFFSETS[o]
+            if (a < arrT[to]) {
+                arrT[to] = a; boardT[to] = a + MIN_CHANGE; viaWalk[to] = -1
+                viaRide[to] = Ride(trip, o, seenK[o][trip], j + 1, seenT[o][trip], a)
+                egress[to]?.let { w -> if (a + w < best) { best = a + w; bestStop = to } }
+                for (x in links.start[to] until links.start[to + 1]) {
+                    val nb = links.to[x]; val aw = a + links.secs[x]
+                    if (aw < arrT[nb]) {
+                        arrT[nb] = aw; boardT[nb] = aw; viaWalk[nb] = to; viaRide[nb] = null
+                        egress[nb]?.let { w -> if (aw + w < best) { best = aw + w; bestStop = nb } }
+                    }
+                }
+            }
+        }
+        if (bestStop < 0 || best >= INF) return null
+
+        val steps = ArrayList<Step>()
+        var s = bestStop; var guard = 0
+        while (guard++ < 64) {
+            val w = viaWalk[s]
+            val r = viaRide[s]
+            when {
+                w == -2 -> { steps.add(Step(null, -1, s, t0, arrT[s])); break }
+                w >= 0 -> { steps.add(Step(null, w, s, arrT[w], arrT[s])); s = w }
+                r != null -> { steps.add(Step(r, -1, -1, r.dep, r.arr)); s = stStop[r.boardK] }
+                else -> return null
+            }
+        }
+        steps.reverse()
+        // The walk from the origin leaves just in time for the first vehicle, not at t0.
+        val firstRide = steps.firstOrNull { it.ride != null }?.ride ?: return null
+        if (steps[0].ride == null && steps[0].walkFrom == -1) {
+            val w = steps[0].arr - steps[0].dep
+            steps[0] = Step(null, -1, steps[0].walkTo, firstRide.dep - w - 60, firstRide.dep - 60)
+        }
+        return Found(steps[0].dep, best, steps)
+    }
+
+    private fun lowerBound(net: Net, t: Int): Int {
+        var lo = 0; var hi = net.cST.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (net.stDep[net.cST[mid]] < t) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
+    // ---- what the UI gets ----
+
+    private fun israelMidnightUtc(atMs: Long): Long {
+        val c = Calendar.getInstance(ISRAEL).apply {
+            timeInMillis = atMs
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
+        return c.timeInMillis / 1000
+    }
+
+    /**
+     * Up to [count] trips from [from] to [to]. [whenMs] 0 means now; with [arriveBy] the trips are the
+     * latest that still arrive by then. [routeTypes] are GTFS route types; empty allows all.
+     */
+    fun plan(
+        net: Net, from: Pair<Double, Double>, to: Pair<Double, Double>,
+        whenMs: Long = 0L, arriveBy: Boolean = false, routeTypes: Collection<Int> = emptyList(), count: Int = 5,
+    ): Pair<List<Moovit.Itinerary>, Moovit.Resolved> {
+        val atMs = if (whenMs > 0) whenMs else System.currentTimeMillis()
+        val midnight = israelMidnightUtc(atMs)
+        val today = Calendar.getInstance(ISRAEL).apply { timeInMillis = atMs }.get(Calendar.DAY_OF_WEEK) - 1
+        val target = (atMs / 1000 - midnight).toInt()
+        val origin = around(net, from.first, from.second, ACCESS_M)
+        val egress = around(net, to.first, to.second, ACCESS_M).toMap()
+        if (origin.isEmpty() || egress.isEmpty()) return emptyList<Moovit.Itinerary>() to Moovit.Resolved()
+        val links = links(net)
+        // Route types past 7 (Israel's feed has a few, such as on-demand lines) count as buses.
+        val allowed: (Int) -> Boolean = if (routeTypes.isEmpty()) { _ -> true } else { t -> t in routeTypes || (t > 7 && 3 in routeTypes) }
+
+        val found = ArrayList<Found>()
+        var t = if (arriveBy) target - 3 * 3600 else target
+        var tries = 0
+        while (found.size < (if (arriveBy) 12 else count) && tries++ < 16) {
+            val f = scan(net, links, origin, egress, t, today, allowed) ?: break
+            if (arriveBy && f.arr > target) break
+            if (found.none { same(it, f) }) found.add(f)
+            // Next search sets off a second too late for this trip's first vehicle (f.dep is its walk
+            // start, a minute's margin before boarding), so it finds the one after.
+            t = f.dep + 61
+        }
+        val chosen = if (arriveBy) found.sortedByDescending { it.dep }.take(count) else found
+
+        val lines = LinkedHashMap<Int, Moovit.LineInfo>()
+        val stops = LinkedHashMap<Int, Moovit.StopInfo>()
+        val types = LinkedHashMap<Int, Int>()
+        fun note(s: Int) {
+            val id = stopId(s)
+            if (id !in stops) stops[id] = Moovit.StopInfo(id, net.name[s], net.code[s].takeIf { it > 0 }?.toString().orEmpty(), net.lat[s], net.lon[s])
+        }
+        fun pt(s: Int) = net.lat[s] to net.lon[s]
+
+        val out = chosen.mapIndexed { n, f ->
+            val legs = ArrayList<Moovit.Leg>()
+            for ((k, st) in f.steps.withIndex()) {
+                val r = st.ride
+                if (r == null) {
+                    val a = if (st.walkFrom >= 0) pt(st.walkFrom) else from
+                    val b = pt(st.walkTo)
+                    if (st.walkFrom >= 0) note(st.walkFrom)
+                    note(st.walkTo)
+                    legs.add(Moovit.Leg(
+                        Moovit.LegKind.WALK, dep = midnight + st.dep, arr = midnight + st.arr,
+                        fromStop = if (st.walkFrom >= 0) stopId(st.walkFrom) else -1, toStop = stopId(st.walkTo),
+                        meters = walkMetres(a, b), shape = listOf(a, b),
+                    ))
+                    continue
+                }
+                val route = net.tripRoute[r.trip]
+                val lid = lineId(route)
+                if (lid !in lines) {
+                    lines[lid] = Moovit.LineInfo(
+                        groupId = lid, number = net.rShort[route], agencyId = lid,
+                        origin = net.name[net.stStop[net.tripStart[r.trip]]], destination = net.name[net.tripLast(r.trip)],
+                        caption = net.rLong[route],
+                    )
+                    types[lid] = net.rType[route]
+                }
+                val path = (r.boardK..r.alightK).map { net.stStop[it] }
+                path.forEach(::note)
+                val tripId = -(r.trip.toLong() * 4 + r.day + 1)
+                val dep = midnight + r.dep; val arr = midnight + r.arr
+                legs.add(Moovit.Leg(
+                    Moovit.LegKind.WAIT, lineId = lid, dep = dep, arr = dep,
+                    fromStop = stopId(path.first()), toStop = stopId(path.last()),
+                    nextDeps = listOf(Moovit.Departure(tripId = tripId, staticUtc = dep)),
+                ))
+                legs.add(Moovit.Leg(
+                    Moovit.LegKind.RIDE, lineId = lid, tripId = tripId, dep = dep, arr = arr,
+                    stops = path.map(::stopId), fromStop = stopId(path.first()), toStop = stopId(path.last()),
+                    shortName = net.rShort[route], shape = path.map(::pt),
+                ))
+                // The walk from the last stop to the destination.
+                if (k == f.steps.lastIndex) {
+                    val last = path.last()
+                    val w = egressSecs(net, last, to)
+                    legs.add(Moovit.Leg(
+                        Moovit.LegKind.WALK, dep = arr, arr = arr + w,
+                        fromStop = stopId(last), toStop = -1, meters = walkMetres(pt(last), to), shape = listOf(pt(last), to),
+                    ))
+                }
+            }
+            if (f.steps.last().ride == null) {
+                val last = f.steps.last().walkTo
+                val w = egressSecs(net, last, to)
+                legs.add(Moovit.Leg(
+                    Moovit.LegKind.WALK, dep = midnight + f.steps.last().arr, arr = midnight + f.steps.last().arr + w,
+                    fromStop = stopId(last), toStop = -1, meters = walkMetres(pt(last), to), shape = listOf(pt(last), to),
+                ))
+            }
+            Moovit.Itinerary(
+                guid = "kavplus-offline-$n-${f.dep}", group = 2, legs = legs,
+                dep = legs.first().dep, arr = legs.last().arr,
+                section = SECTION,
+            )
+        }
+        return out to Moovit.Resolved(lines, stops, types)
+    }
+
+    const val SECTION = "Planned on your phone"
+
+    private fun same(a: Found, b: Found): Boolean {
+        fun key(f: Found) = f.steps.mapNotNull { it.ride?.let { r -> r.trip } }
+        return key(a) == key(b)
+    }
+
+    private fun egressSecs(net: Net, s: Int, to: Pair<Double, Double>) = walkSecs(metres(net, s, to.first, to.second))
+
+    private fun walkMetres(a: Pair<Double, Double>, b: Pair<Double, Double>): Int {
+        val dy = (a.first - b.first) * 111_195.0
+        val dx = (a.second - b.second) * 111_195.0 * cos(Math.toRadians(a.first))
+        return (sqrt(dx * dx + dy * dy) * DETOUR).toInt()
+    }
+}

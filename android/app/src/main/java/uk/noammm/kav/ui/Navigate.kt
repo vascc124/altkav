@@ -232,6 +232,9 @@ fun NavigateScreen(
                 if (!compact) StepStrip(pager.currentPage, steps.size, currentStep) { target ->
                     scope.launch { pager.animateScrollToPage(target) }
                 }
+                model.missedNotice?.let { notice -> MissedBanner(notice, model.replanHere,
+                    onReplan = { model.missedNotice = null; model.replanHere = false; model.pendingTo = journey?.to; onPlan() },
+                    onClose = { model.missedNotice = null; model.replanHere = false }) }
             }
 
             Column(
@@ -781,3 +784,27 @@ internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopI
             leg.shape.lastOrNull().takeIf { stops[leg.toStop]?.point == null && stops[leg.stops.lastOrNull()]?.point == null },
         )).map { i to it }
     }.distinct()
+
+// AltKav+: after a missed stop, what to do now; with no reroute, a way to plan again from here.
+@Composable
+private fun MissedBanner(text: String, replan: Boolean, onReplan: () -> Unit, onClose: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = K.gap3).glassSurface().padding(K.gap3),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(text, fontSize = 14.sp, color = K.accent, fontWeight = FontWeight.SemiBold)
+            if (replan) Text(
+                T("Plan again from here", "תכננו מחדש מכאן"), fontSize = 13.sp, color = K.text,
+                modifier = Modifier.padding(top = K.gap2).clip(RoundedCornerShape(K.rControl))
+                    .clickable(role = Role.Button, onClick = onReplan).padding(vertical = 6.dp),
+            )
+        }
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(20.dp))
+                .semantics { contentDescription = T("Dismiss", "סגירה") }
+                .clickable(role = Role.Button, onClick = onClose),
+            contentAlignment = Alignment.Center,
+        ) { Text("✕", fontSize = 16.sp, color = K.muted) }
+    }
+}

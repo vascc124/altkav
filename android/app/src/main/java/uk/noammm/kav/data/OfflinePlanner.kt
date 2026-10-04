@@ -113,7 +113,7 @@ object OfflinePlanner {
     // Earliest arrival from [origin] after [t0] (seconds since today's Israel midnight).
     private fun scan(
         net: Net, links: Links, origin: List<Pair<Int, Int>>, egressReal: Map<Int, Int>,
-        t0: Int, today: Int, allowed: (Int) -> Boolean, maxRides: Int = 8,
+        t0: Int, today: Int, allowed: (Int) -> Boolean, maxRides: Int = 8, walkOnly: Boolean = false,
     ): Found? {
         val nS = net.nStops; val nT = net.tripRoute.size
         val egress = egressReal.mapValues { it.value * WALK_RELUCTANCE }
@@ -187,7 +187,12 @@ object OfflinePlanner {
         }
         steps.reverse()
         // The walk from the origin leaves just in time for the first vehicle, not at t0.
-        val firstRide = steps.firstOrNull { it.ride != null }?.ride ?: return null
+        val firstRide = steps.firstOrNull { it.ride != null }?.ride
+        if (firstRide == null) {
+            if (!walkOnly) return null
+            val endWalk = egressReal[bestStop] ?: 0
+            return Found(steps[0].dep, arrT[bestStop] + endWalk, steps, steps.filter { it.ride == null }.sumOf { it.arr - it.dep } + endWalk)
+        }
         if (steps[0].ride == null && steps[0].walkFrom == -1) {
             val w = steps[0].arr - steps[0].dep
             steps[0] = Step(null, -1, steps[0].walkTo, firstRide.dep - w - 60, firstRide.dep - 60)
@@ -306,6 +311,15 @@ object OfflinePlanner {
         val chosen = if (arriveBy) sane.sortedByDescending { it.dep }.take(count)
         else sane.sortedWith(compareBy({ cost(it) }, { it.arr })).take(count)
 
+        return build(net, chosen, later, from, to, midnight, today)
+
+    }
+
+    // Planner results as the itineraries and names the UI takes.
+    private fun build(
+        net: Net, chosen: List<Found>, later: Map<Found, List<Found>>,
+        from: Pair<Double, Double>, to: Pair<Double, Double>, midnight: Long, today: Int,
+    ): Pair<List<Moovit.Itinerary>, Moovit.Resolved> {
         val lines = LinkedHashMap<Int, Moovit.LineInfo>()
         val stops = LinkedHashMap<Int, Moovit.StopInfo>()
         val types = LinkedHashMap<Int, Int>()
@@ -397,6 +411,76 @@ object OfflinePlanner {
             )
         }
         return out to Moovit.Resolved(lines, stops, types)
+    }
+
+    // ---- missed your stop: stay on, and where to get off now ----
+
+    /**
+     * For a rider still aboard [ride] past its stop, at [here] at [nowMs]: the best way on to [to] from the
+     * stops this vehicle has still to reach - get off at one and walk, or change there. The vehicle is the
+     * timetable's trip: known for rides planned here, matched by line, boarding stop code and time for
+     * Moovit's. The itinerary starts with the rest of this ride. Null when the trip can't be found.
+     */
+    fun rerouteAboard(
+        net: Net, ride: Moovit.Leg, r: Moovit.Resolved, here: Pair<Double, Double>, to: Pair<Double, Double>, nowMs: Long,
+    ): Pair<Moovit.Itinerary, Moovit.Resolved>? {
+        val midnight = israelMidnightUtc(nowMs)
+        val today = Calendar.getInstance(ISRAEL).apply { timeInMillis = nowMs }.get(Calendar.DAY_OF_WEEK) - 1
+        val now = (nowMs / 1000 - midnight).toInt()
+        val (trip, o) = tripOf(net, ride, r, midnight, today) ?: return null
+        val off = OFFSETS[o]
+        val a = net.tripStart[trip]; val z = net.tripStart[trip + 1]
+        // Where on the trip the rider is: the stop nearest to them.
+        var kNow = a; var bestM = Double.MAX_VALUE
+        for (k in a until z) { val m = metres(net, net.stStop[k], here.first, here.second); if (m < bestM) { bestM = m; kNow = k } }
+        if (kNow >= z - 1) return null
+        val ahead = (kNow + 1 until z).map { k -> net.stStop[k] to (net.stDep[k] + off - now).coerceAtLeast(0) }
+        // A bus carrying the rider away may leave them a longer walk back than a planned trip would.
+        val egress = around(net, to.first, to.second, 1500.0).toMap()
+        if (egress.isEmpty()) return null
+        // Simple answers only, from a moving bus: get off and walk, or get off and take one more vehicle.
+        // The scan's ride count starts at zero at these stops, so a cap of 0 is "walk" and 1 is "one change".
+        fun cost(x: Found) = x.arr + CHANGE_PENALTY * x.steps.count { it.ride != null } + x.walk * (WALK_RELUCTANCE - 1)
+        val f = listOfNotNull(
+            scan(net, links(net), ahead, egress, now, today, { true }, maxRides = 0, walkOnly = true),
+            scan(net, links(net), ahead, egress, now, today, { true }, maxRides = 1, walkOnly = true),
+        ).minByOrNull(::cost) ?: return null
+        // The scan starts at the stop it got off at, as if walked to; that stop is a stop of this trip.
+        val off0 = f.steps.firstOrNull() ?: return null
+        val getOff = if (off0.ride == null && off0.walkFrom == -1) off0.walkTo else return null
+        val kOff = (kNow + 1 until z).firstOrNull { net.stStop[it] == getOff } ?: return null
+        val stay = Step(Ride(trip, o, kNow, kOff, net.stDep[kNow] + off, net.stDep[kOff] + off), -1, -1, net.stDep[kNow] + off, net.stDep[kOff] + off)
+        val rest = f.steps.drop(1)
+        val walked = rest.filter { it.ride == null }.sumOf { it.arr - it.dep } + (egress[getOff] ?: 0)
+        val found = Found(now, f.arr, listOf(stay) + rest, walked)
+        val (list, res) = build(net, listOf(found), emptyMap(), here, to, midnight, today)
+        return list.firstOrNull()?.let { it to res }
+    }
+
+    // The timetable trip behind a ride: its own for rides planned here; for Moovit's, the run of the same
+    // line number from the stop with the same code closest to the planned departure (within 15 min).
+    private fun tripOf(net: Net, ride: Moovit.Leg, r: Moovit.Resolved, midnight: Long, today: Int): Pair<Int, Int>? {
+        if (ride.tripId < 0 && ride.lineId < 0 && ride.tripId > -4L * net.tripRoute.size - 4) {
+            val k = (-ride.tripId - 1)
+            return (k / 4).toInt() to (k % 4).toInt().coerceIn(0, 2)
+        }
+        val code = r.stop(ride.fromStop)?.code?.toIntOrNull() ?: return null
+        val number = r.line(ride.lineId)?.number ?: return null
+        val stop = (0 until net.nStops).firstOrNull { net.code[it] == code } ?: return null
+        val dep = (ride.dep - midnight).toInt()
+        val days = intArrayOf(today, (today + 6) % 7, (today + 1) % 7)
+        var best: Pair<Int, Int>? = null; var bestGap = 15 * 60 + 1
+        for (i in net.dStart[stop] until net.dStart[stop + 1]) {
+            val st = net.cST[net.dConn[i]]
+            val t = net.tripOf(st)
+            if (net.rShort[net.tripRoute[t]] != number) continue
+            for (o in 0..2) {
+                if (!net.runsOn(t, days[o])) continue
+                val gap = kotlin.math.abs(net.stDep[st] + OFFSETS[o] - dep)
+                if (gap < bestGap) { bestGap = gap; best = t to o }
+            }
+        }
+        return best
     }
 
     const val SECTION = "Planned on your phone"

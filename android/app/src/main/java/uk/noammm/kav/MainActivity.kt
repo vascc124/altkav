@@ -218,6 +218,9 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
     var tab by mutableStateOf(Tab.Directions)
     var settingsOpen by mutableStateOf(false)
     var activeJourney by mutableStateOf<ActiveJourney?>(null)
+    // AltKav+: what navigation says after a missed stop; replanHere asks for a new plan from where the rider is.
+    var missedNotice by mutableStateOf<String?>(null)
+    var replanHere by mutableStateOf(false)
     var returnHome by mutableStateOf(false)
 
     var navigating by mutableStateOf(false)
@@ -587,13 +590,64 @@ private fun Shell(model: KavModel) {
     LaunchedEffect(model.activeJourney?.trip) {
         val journey = model.activeJourney ?: return@LaunchedEffect
         val steps = buildSteps(journey.trip, journey.fromLabel, journey.toLabel)
+        // AltKav+: still aboard past the stop - moving at bus speed, over 300 m beyond it and getting further,
+        // twice running, within 15 minutes of the planned arrival - means the stop was missed. Then the
+        // rest of the trip is planned again from the stops this vehicle still reaches.
+        var away = 0; var lastAway = 0.0; var handled: Moovit.Leg? = null
         while (true) {
             val current = model.activeJourney?.takeIf { it.trip === journey.trip } ?: break
+            val nowS = System.currentTimeMillis() / 1000
             val next = journeyProgress(
                 steps, model.journeyStep, current.resolved, current.chosen,
-                System.currentTimeMillis() / 1000, model.fix, canLocate(ctx),
+                nowS, model.fix, canLocate(ctx),
             )
             if (next != model.journeyStep) model.journeyStep = next
+            val fix = model.fix
+            try {
+            val passed = (0 until next.coerceAtMost(steps.size)).lastOrNull { steps[it] is Step.Ride }?.let { steps[it] as Step.Ride }
+            if (fix != null && passed != null && steps.getOrNull(next) !is Step.Ride) {
+                val ride = boardingChoice(passed.ride, passed.wait, current.chosen[passed.legIndex] ?: 0).first
+                val stopAt = current.resolved.stop(ride.toStop)?.point ?: ride.shape.lastOrNull()
+                // Riding the trip's next vehicle already is not a missed stop.
+                val onLater = steps.drop(next).filterIsInstance<Step.Ride>().any { later ->
+                    uk.noammm.kav.ui.distanceToPath(fix.lat, fix.lon, later.ride.shape) < 80
+                }
+                if (!onLater && ride !== handled && stopAt != null && nowS - fix.at < 30 && nowS - ride.arr < 15 * 60) {
+                    val d = fix.distanceTo(stopAt)
+                    away = if (fix.speed > 5f && d > 300 && d > lastAway) away + 1 else 0
+                    lastAway = d
+                    if (away >= 2) {
+                        handled = ride; away = 0
+                        val dest = current.to?.let { it.lat to it.lon } ?: current.trip.legs.lastOrNull { it.shape.isNotEmpty() }?.shape?.lastOrNull()
+                        val net = model.net ?: runCatching { loadNet(ctx) }.getOrNull()?.also { model.net = it }
+                        val re = if (net != null && dest != null) withContext(Dispatchers.Default) {
+                            runCatching { uk.noammm.kav.data.OfflinePlanner.rerouteAboard(net, ride, current.resolved, fix.lat to fix.lon, dest, nowS * 1000) }.getOrNull()
+                        } else null
+                        if (re != null) {
+                            val (trip2, r2) = re
+                            val off = trip2.rides.firstOrNull()
+                            val at = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).apply { timeZone = uk.noammm.kav.ui.ISRAEL }
+                                .format(java.util.Date(trip2.arr * 1000))
+                            val stopName = off?.let { r2.stopName(it.toStop) }.orEmpty()
+                            model.missedNotice = T(
+                                "Missed your stop? Stay on and get off at $stopName. You'll arrive at $at.",
+                                "פספסתם את התחנה? הישארו באוטובוס ורדו ב$stopName. הגעה ב-$at.",
+                            )
+                            model.replanHere = false
+                            model.activeJourney = ActiveJourney(trip2, r2, T("On the bus", "באוטובוס"), current.toLabel, from = null, to = current.to)
+                            model.journeyStep = 2
+                        } else {
+                            model.missedNotice = T("Looks like you missed your stop.", "נראה שפספסתם את התחנה.")
+                            model.replanHere = true
+                        }
+                    }
+                }
+            }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w("KavMissed", "missed-stop check failed", e)
+            }
             delay(2000)
         }
     }

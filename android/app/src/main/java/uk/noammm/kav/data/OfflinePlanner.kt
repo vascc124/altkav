@@ -20,6 +20,9 @@ object OfflinePlanner {
     private const val MIN_CHANGE = 120        // seconds to change vehicles at the same stop
     private const val INF = Int.MAX_VALUE / 2
     private const val CHANGE_PENALTY = 5 * 60 // what one more vehicle is worth, in arrival time
+    // Walking to and from the stops counts double when choosing (OpenTripPlanner's "walk reluctance"):
+    // a bus to the door beats a long walk that arrives a little sooner. Times shown stay real.
+    private const val WALK_RELUCTANCE = 2
 
     fun stopId(s: Int) = -(s + 1)
     fun lineId(r: Int) = -(r + 1)
@@ -102,17 +105,18 @@ object OfflinePlanner {
 
     private class Ride(val trip: Int, val day: Int, val boardK: Int, val alightK: Int, val dep: Int, val arr: Int)
     private class Step(val ride: Ride?, val walkFrom: Int, val walkTo: Int, val dep: Int, val arr: Int)
-    private class Found(val dep: Int, val arr: Int, val steps: List<Step>)
+    private class Found(val dep: Int, val arr: Int, val steps: List<Step>, val walk: Int)
 
     // Day offsets: a trip running yesterday shows past midnight at its time minus a day, tomorrow's at plus.
     private val OFFSETS = intArrayOf(0, -86_400, 86_400)
 
     // Earliest arrival from [origin] after [t0] (seconds since today's Israel midnight).
     private fun scan(
-        net: Net, links: Links, origin: List<Pair<Int, Int>>, egress: Map<Int, Int>,
+        net: Net, links: Links, origin: List<Pair<Int, Int>>, egressReal: Map<Int, Int>,
         t0: Int, today: Int, allowed: (Int) -> Boolean, maxRides: Int = 8,
     ): Found? {
         val nS = net.nStops; val nT = net.tripRoute.size
+        val egress = egressReal.mapValues { it.value * WALK_RELUCTANCE }
         val arrT = IntArray(nS) { INF }          // earliest arrival at a stop
         val boardT = IntArray(nS) { INF }        // earliest a vehicle can be boarded there
         val viaRide = arrayOfNulls<Ride>(nS)
@@ -187,7 +191,9 @@ object OfflinePlanner {
             val w = steps[0].arr - steps[0].dep
             steps[0] = Step(null, -1, steps[0].walkTo, firstRide.dep - w - 60, firstRide.dep - 60)
         }
-        return Found(steps[0].dep, best, steps)
+        val endWalk = egressReal[bestStop] ?: 0
+        val walked = steps.filter { it.ride == null }.sumOf { it.arr - it.dep } + endWalk
+        return Found(steps[0].dep, arrT[bestStop] + endWalk, steps, walked)
     }
 
     private fun lowerBound(net: Net, t: Int): Int {
@@ -231,14 +237,20 @@ object OfflinePlanner {
         val found = ArrayList<Found>()
         var t = if (arriveBy) target - 3 * 3600 else target
         var tries = 0
-        while (found.size < (if (arriveBy) 12 else count * 2) && tries++ < 20) {
-            val f = scan(net, links, origin, egress, t, today, allowed) ?: break
+        // Until there are enough different routes: the same line again only adds a departure to its card.
+        val seen = HashSet<List<Long>>()
+        while ((if (arriveBy) found.size < 12 else seen.size < count + 1) && tries++ < 30) {
+            val f = scan(net, links, origin, egress, t, today, allowed)?.let { trimShortLast(net, it, to) } ?: break
             if (arriveBy && f.arr > target) break
-            if (found.none { same(it, f) }) found.add(f)
+            if (found.none { same(it, f) }) { found.add(f); seen.add(signature(net, f)) }
             // Next search sets off a second too late for this trip's first vehicle (f.dep is its walk
             // start, a minute's margin before boarding), so it finds the one after.
             t = f.dep + 61
         }
+        // A last ride of a few minutes that walking from its stop would nearly match is walked instead:
+        // walk reluctance alone would hop a bus for two stops rather than walk 400 m.
+        for (i in found.indices) found[i] = trimShortLast(net, found[i], to)
+
         // Trips with fewer vehicles: the fastest trip may change twice where one bus is barely slower.
         // Direct and one-change searches over the same window join in, then anything another trip
         // beats on every count (leaves no earlier, arrives no later, no more vehicles) is dropped.
@@ -248,7 +260,7 @@ object OfflinePlanner {
                 var tc = if (arriveBy) target - 3 * 3600 else target
                 var n = 0
                 while (n++ < 4) {
-                    val f = scan(net, links, origin, egress, tc, today, allowed, maxRides = cap) ?: break
+                    val f = scan(net, links, origin, egress, tc, today, allowed, maxRides = cap)?.let { trimShortLast(net, it, to) } ?: break
                     if (f.arr > horizon + 20 * 60 || (arriveBy && f.arr > target)) break
                     if (found.none { same(it, f) }) found.add(f)
                     tc = f.dep + 61
@@ -258,7 +270,10 @@ object OfflinePlanner {
         // Each change is worth 5 min of arrival, and against a trip with fewer changes leaving up to 10 min
         // earlier still counts as "no earlier": nobody wants an extra change to arrive a minute sooner, or
         // two extra changes just to set off a minute after the train. The next bus of the same kind stays.
-        fun cost(f: Found) = f.arr + CHANGE_PENALTY * rideCount(f)
+        fun cost(f: Found) = f.arr + CHANGE_PENALTY * rideCount(f) + f.walk * (WALK_RELUCTANCE - 1)
+        // A change for a ride of 3 min or less isn't worth offering while anything else is on the list.
+        val hops = found.filter { f -> f.steps.count { it.ride != null } >= 2 && f.steps.any { st -> st.ride?.let { it.arr - it.dep <= 180 } == true } }
+        if (hops.size < found.size) found.removeAll(hops.toSet())
         val kept = found.filter { a ->
             found.none { b ->
                 b !== a && (b.dep >= a.dep || (rideCount(b) < rideCount(a) && b.dep >= a.dep - 10 * 60)) &&
@@ -266,8 +281,21 @@ object OfflinePlanner {
                     (b.dep > a.dep || cost(b) < cost(a) || rideCount(b) < rideCount(a))
             }
         }
-        val chosen = if (arriveBy) kept.sortedByDescending { it.dep }.take(count)
-        else kept.sortedWith(compareBy({ it.arr }, { rideCount(it) })).take(count + 1)
+        // The same route again later (same lines, same stops) is one card with its next departures, as
+        // Moovit shows "in 4, 33 min". The feed also repeats some trips under several service ids.
+        val groups = LinkedHashMap<List<Long>, MutableList<Found>>()
+        for (f in kept.sortedBy { it.dep }) groups.getOrPut(signature(net, f)) { ArrayList() }.add(f)
+        val later = HashMap<Found, List<Found>>()
+        val heads = groups.values.map { g ->
+            val uniq = g.distinctBy { it.dep }
+            later[uniq[0]] = uniq.drop(1).take(3)
+            uniq[0]
+        }
+        // The same lines from another stop (a longer walk to the same bus) is the same choice: keep the best.
+        val best = heads.groupBy { f -> f.steps.mapNotNull { it.ride?.let { r -> net.tripRoute[r.trip] } } }
+            .values.map { g -> if (arriveBy) g.maxBy { it.dep } else g.minBy { cost(it) } }
+        val chosen = if (arriveBy) best.sortedByDescending { it.dep }.take(count)
+        else best.sortedWith(compareBy({ cost(it) }, { it.arr })).take(count)
 
         val lines = LinkedHashMap<Int, Moovit.LineInfo>()
         val stops = LinkedHashMap<Int, Moovit.StopInfo>()
@@ -311,7 +339,12 @@ object OfflinePlanner {
                 legs.add(Moovit.Leg(
                     Moovit.LegKind.WAIT, lineId = lid, dep = dep, arr = dep,
                     fromStop = stopId(path.first()), toStop = stopId(path.last()),
-                    nextDeps = listOf(Moovit.Departure(tripId = tripId, staticUtc = dep)),
+                    nextDeps = listOf(Moovit.Departure(tripId = tripId, staticUtc = dep)) +
+                        if (k == f.steps.indexOfFirst { it.ride != null }) later[f].orEmpty().mapNotNull { o ->
+                            o.steps.firstOrNull { it.ride != null }?.ride?.let { lr ->
+                                Moovit.Departure(tripId = -(lr.trip.toLong() * 4 + lr.day + 1), staticUtc = midnight + lr.dep)
+                            }
+                        } else emptyList(),
                 ))
                 legs.add(Moovit.Leg(
                     Moovit.LegKind.RIDE, lineId = lid, tripId = tripId, dep = dep, arr = arr,
@@ -336,6 +369,15 @@ object OfflinePlanner {
                     fromStop = stopId(last), toStop = -1, meters = walkMetres(pt(last), to), shape = listOf(pt(last), to),
                 ))
             }
+            // A walk to a stop and on from it, with no ride between, is one walk.
+            val merged = ArrayList<Moovit.Leg>(legs.size)
+            for (l in legs) {
+                val p = merged.lastOrNull()
+                if (p != null && p.kind == Moovit.LegKind.WALK && l.kind == Moovit.LegKind.WALK) {
+                    merged[merged.lastIndex] = p.copy(arr = l.arr, toStop = l.toStop, meters = p.meters + l.meters, shape = p.shape + l.shape.drop(1))
+                } else merged.add(l)
+            }
+            legs.clear(); legs.addAll(merged.filter { it.kind != Moovit.LegKind.WALK || it.meters > 0 || it == merged.first() })
             Moovit.Itinerary(
                 guid = "kavplus-offline-$n-${f.dep}", group = 2, legs = legs,
                 dep = legs.first().dep, arr = legs.last().arr,
@@ -390,6 +432,28 @@ object OfflinePlanner {
     }
 
     private fun rideCount(f: Found) = f.steps.count { it.ride != null }
+
+    // Drops a last ride of 4 min or less, and the walk to it, when walking on from where the trip stood
+    // before it is within reach and costs at most 6 min more.
+    private fun trimShortLast(net: Net, f: Found, to: Pair<Double, Double>): Found {
+        val last = f.steps.last().ride ?: return f
+        if (f.steps.count { it.ride != null } < 2 || last.arr - last.dep > 4 * 60) return f
+        var steps = f.steps.dropLast(1)
+        while (steps.isNotEmpty() && steps.last().ride == null) steps = steps.dropLast(1)
+        val prev = steps.lastOrNull()?.ride ?: return f
+        val stop = net.stStop[prev.alightK]
+        val m = metres(net, stop, to.first, to.second)
+        if (m > ACCESS_M) return f
+        val arr = prev.arr + walkSecs(m)
+        if (arr > f.arr + 6 * 60) return f
+        val walked = steps.filter { it.ride == null }.sumOf { it.arr - it.dep } + walkSecs(m)
+        return Found(f.dep, arr, steps, walked)
+    }
+
+    // Lines and the stops each is boarded and left at.
+    private fun signature(net: Net, f: Found): List<Long> = f.steps.mapNotNull { st ->
+        st.ride?.let { r -> (net.tripRoute[r.trip].toLong() shl 40) or (net.stStop[r.boardK].toLong() shl 20) or net.stStop[r.alightK].toLong() }
+    }
 
     private fun same(a: Found, b: Found): Boolean {
         fun key(f: Found) = f.steps.mapNotNull { it.ride?.let { r -> r.trip } }

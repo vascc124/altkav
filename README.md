@@ -4,9 +4,9 @@
 
 <h1 align="center">Kav</h1>
 
-> **This is Kav+, a personal fork of [Kav](https://github.com/ImNoammm/kav) by Noam.**
-> It installs next to the original (app id `uk.noammm.kav.plus`, shown as "Kav+") and updates from
-> [this fork's releases](https://github.com/vascc124/kav/releases). What it changes:
+> **This is AltKav+, a personal fork of [Kav](https://github.com/ImNoammm/kav) by Noam.**
+> It installs next to the original (app id `uk.noammm.kav.plus`, shown as "AltKav+") and updates from
+> [this fork's releases](https://github.com/vascc124/altkav/releases). What it changes:
 >
 > - **Works when Moovit refuses unofficial apps.** Trip planning falls back to a planner that runs on the
 >   phone over the built-in national timetable; place search falls back to OpenStreetMap
@@ -98,7 +98,7 @@ KAV_REGION=il KAV_BBOX=national python3 tools/export_web_bundle.py
   License 2.0).
 - Timetables from the Israel Ministry of Transport. Trip plans and live
   positions from Moovit.
-- Kav+ fallbacks: live data from the Ministry's SIRI feed via
+- AltKav+ fallbacks: live data from the Ministry's SIRI feed via
   [curlbus](https://github.com/elad661/curlbus) by Elad Alfassa; place search from
   OpenStreetMap through Komoot's [Photon](https://photon.komoot.io).
 

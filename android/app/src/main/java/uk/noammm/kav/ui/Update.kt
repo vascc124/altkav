@@ -132,7 +132,7 @@ fun UpdateSection(model: KavModel) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap3)) {
             AppIcon(40.dp)
             Column(Modifier.weight(1f)) {
-                Text(T.ltr("Kav+ ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
+                Text(T.ltr("AltKav+ ${Updates.installedVersion(ctx)}"), fontSize = 14.sp, color = K.text)
                 Text(
                     when {
                         release != null -> T("${release.version} is available", "גרסה ${release.version} זמינה")
@@ -189,7 +189,7 @@ fun TimetableSection() {
                     }
                     status = when {
                         r.isFailure -> T("Couldn't check", "לא הצלחנו לבדוק")
-                        r.getOrNull() == true -> T("A newer week was downloaded. Close and reopen Kav+ to use it.", "הורד שבוע חדש יותר. סגרו ופתחו מחדש את Kav+ כדי להשתמש בו.")
+                        r.getOrNull() == true -> T("A newer week was downloaded. Close and reopen AltKav+ to use it.", "הורד שבוע חדש יותר. סגרו ופתחו מחדש את AltKav+ כדי להשתמש בו.")
                         else -> T("Up to date", "מעודכן")
                     }
                     since = uk.noammm.kav.data.TimetableUpdate.inUseSince(ctx)
@@ -199,8 +199,8 @@ fun TimetableSection() {
         }
         Text(
             T(
-                "Rebuilt every Saturday night from the Ministry of Transport feed; Kav+ fetches it by itself, at most once a day.",
-                "נבנה מחדש בכל מוצאי שבת מנתוני משרד התחבורה; Kav+ מוריד אותו לבד, לכל היותר פעם ביום.",
+                "Rebuilt every Saturday night from the Ministry of Transport feed; AltKav+ fetches it by itself, at most once a day.",
+                "נבנה מחדש בכל מוצאי שבת מנתוני משרד התחבורה; AltKav+ מוריד אותו לבד, לכל היותר פעם ביום.",
             ),
             fontSize = 11.sp, color = K.dim, lineHeight = 16.sp,
         )

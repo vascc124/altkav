@@ -13,12 +13,14 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object Updates {
-    // Kav+ updates come from this fork's releases; upstream builds are signed with
+    // AltKav+ updates come from this fork's releases; upstream builds are signed with
     // another key and would not install over it anyway.
     const val OWNER = "vascc124"
-    const val REPO = "kav"
+    // Renamed from "kav" on 2026-10-04; GitHub redirects the old name, so older installs still find this.
+    const val REPO = "altkav"
     // The offline map is unchanged from upstream, so it still downloads from there.
     const val UPSTREAM_OWNER = "ImNoammm"
+    const val UPSTREAM_REPO = "kav"
     const val PAGE = "https://github.com/$OWNER/$REPO/releases"
 
     class Release(

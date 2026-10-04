@@ -22,7 +22,7 @@ object Photon {
         }
         val c = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 8_000; readTimeout = 8_000
-            setRequestProperty("User-Agent", "KavPlus (github.com/vascc124/kav)")
+            setRequestProperty("User-Agent", "AltKavPlus (github.com/vascc124/altkav)")
         }
         if (c.responseCode != 200) throw java.io.IOException("Photon HTTP ${c.responseCode}")
         val root = JSONObject(c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) })

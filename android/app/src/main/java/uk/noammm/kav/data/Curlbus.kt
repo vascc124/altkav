@@ -140,7 +140,7 @@ object Curlbus {
         val c = (URL(BASE + codes.joinToString("+")).openConnection() as HttpURLConnection).apply {
             connectTimeout = 10_000; readTimeout = 20_000
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "KavPlus (github.com/vascc124/kav)")
+            setRequestProperty("User-Agent", "AltKavPlus (github.com/vascc124/altkav)")
         }
         val code = c.responseCode
         val body = (if (code in 200..299) c.inputStream else c.errorStream)?.use { String(it.readBytes(), Charsets.UTF_8) }

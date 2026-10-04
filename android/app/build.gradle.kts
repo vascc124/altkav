@@ -15,10 +15,10 @@ android {
         applicationId = "uk.noammm.kav.plus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2107 // upstream versionCode × 100 + Kav+ build
+        versionCode = 2108 // upstream versionCode × 100 + Kav+ build
         // "<upstream version>.p<n>": Updates.isNewer compares the digits, so 2.1.p2 > 2.1.p1
         // and the next upstream merge (2.2.p1) still counts as newer.
-        versionName = "2.1.p7"
+        versionName = "2.1.p8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Kav+: when the bundled timetable was built, so TimetableUpdate only fetches a newer week.
         val bundled = file("src/main/assets/il.kav").takeIf { it.exists() }?.lastModified() ?: 0L

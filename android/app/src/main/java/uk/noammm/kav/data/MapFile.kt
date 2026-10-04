@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 object MapFile {
     const val TAG = "map-1"
-    const val URL = "https://github.com/${Updates.UPSTREAM_OWNER}/${Updates.REPO}/releases/download/$TAG/israel.pmtiles"
+    const val URL = "https://github.com/${Updates.UPSTREAM_OWNER}/${Updates.UPSTREAM_REPO}/releases/download/$TAG/israel.pmtiles"
 
     const val BYTES = 185_001_087L
 

@@ -26,3 +26,7 @@ tools/thrift_from_jadx.py
 # Tests
 android/app/src/androidTest/
 android/app/src/test/
+
+# Kav+ release signing (key itself lives in ../kav-signing)
+android/keystore.properties
+*.jks

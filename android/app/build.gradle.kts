@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,15 +11,32 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "uk.noammm.kav"
+        // Own id so Kav+ installs next to upstream Kav instead of over it.
+        applicationId = "uk.noammm.kav.plus"
         minSdk = 26
         targetSdk = 35
         versionCode = 21
-        versionName = "2.1"
+        // "<upstream version>.p<n>": Updates.isNewer compares the digits, so 2.1.p2 > 2.1.p1
+        // and the next upstream merge (2.2.p1) still counts as newer.
+        versionName = "2.1.p1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // MapLibre's renderer is native code. Every phone Kav can reach is arm64;
         // x86_64 stays so the release APK still installs on the emulator.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // Release key lives outside the repo (keystore.properties next to android/); without it
+    // release builds fall back to the local debug key like upstream.
+    val keyProps = Properties().apply {
+        rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    }
+    signingConfigs {
+        if (keyProps.isNotEmpty()) create("plus") {
+            storeFile = file(keyProps.getProperty("storeFile"))
+            storePassword = keyProps.getProperty("storePassword")
+            keyAlias = keyProps.getProperty("keyAlias")
+            keyPassword = keyProps.getProperty("keyPassword")
+        }
     }
 
     buildTypes {
@@ -29,7 +48,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             // Signed with the local debug key: there is no store listing, and an update
             // only installs over the previous one if both carry the same signature.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("plus") ?: signingConfigs.getByName("debug")
         }
     }
 

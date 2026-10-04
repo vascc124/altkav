@@ -48,6 +48,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
+import uk.noammm.kav.data.Curlbus
 import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.data.MoovitSession
 import uk.noammm.kav.data.nearestStops
@@ -162,6 +163,8 @@ fun LiveScreen(model: KavModel) {
     var lines by remember { mutableStateOf<Map<Int, Moovit.LineInfo?>>(emptyMap()) }
     var modes by remember { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var pollSecs by remember { mutableIntStateOf(20) }
+    // Kav+: while Moovit refuses new sessions, arrivals come from curlbus. Stop ids are then MOT stop codes.
+    var viaCurlbus by remember { mutableStateOf(false) }
     var focus by remember { mutableStateOf<LiveFocus?>(null) }
     var picked by remember { mutableStateOf<Tracked?>(null) }
     var farStop by remember { mutableStateOf<Moovit.Stop?>(null) }
@@ -182,6 +185,15 @@ fun LiveScreen(model: KavModel) {
                 .map { it.first }
         }
         fun stopOf(g: Int, id: Int) = Moovit.Stop(id, net.lat[g], net.lon[g], net.name[g])
+        if (!viaCurlbus && runCatching { Online.open(here) }.isFailure) viaCurlbus = true
+        if (viaCurlbus) {
+            near = inView.filter { net.code.getOrElse(it) { 0 } > 0 }.map { stopOf(it, net.code[it]) }.distinctBy { it.id }
+            unmatched = emptyList()
+            matching = 0 to 0
+            if (near.isEmpty()) { loading = false; status = T("No stops around here", "אין תחנות באזור הזה") }
+            wake.trySend(Unit)
+            return@LaunchedEffect
+        }
         while (true) {
             val known = ArrayList<Moovit.Stop>()
             val unknown = ArrayList<Int>()
@@ -225,6 +237,18 @@ fun LiveScreen(model: KavModel) {
                     continue
                 }
                 try {
+                    if (viaCurlbus) {
+                        val codes = (listOfNotNull(farStop?.id) + near.map { it.id }).distinct()
+                        val r = withContext(Dispatchers.IO) { Curlbus.stopArrivals(codes, T.rtl) }
+                        arrivals = r.arrivals; lines = lines + r.lines; modes = modes + r.modes
+                        pollSecs = Curlbus.POLL_SECS; loading = false
+                        val n = r.arrivals.values.filter { it.hasLocation }.map { it.tripId }.distinct().size
+                        val asked = minOf(codes.size, Curlbus.MAX_STOPS)
+                        status = if (n == 0) T("No tracked vehicles right now · curlbus", "אין כרגע כלי רכב במעקב · curlbus")
+                        else T("$n live vehicles · $asked nearest stops · curlbus", "$n כלי רכב בזמן אמת · $asked התחנות הקרובות · curlbus")
+                        kotlinx.coroutines.withTimeoutOrNull(pollSecs * 1000L) { wake.receive() }
+                        continue
+                    }
                     val s = Online.open(here)
                     val (found, poll) = withContext(Dispatchers.IO) { Moovit.stopArrivals(s, ids) }
                     arrivals = found; pollSecs = poll.coerceIn(10, 60); loading = false
@@ -274,6 +298,7 @@ fun LiveScreen(model: KavModel) {
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    android.util.Log.w("KavLive", "refresh failed (curlbus=$viaCurlbus)", e)
                     loading = false
                     status = T("Could not refresh · retrying shortly", "לא ניתן היה לרענן · ננסה שוב בקרוב")
                 }
@@ -301,6 +326,7 @@ fun LiveScreen(model: KavModel) {
     LaunchedEffect(focus) { if (focus == null) farStop = null }
     LaunchedEffect(farStop?.id) {
         val f = farStop ?: return@LaunchedEffect
+        if (viaCurlbus) { wake.trySend(Unit); return@LaunchedEffect }
         val s = runCatching { Online.open() }.getOrNull() ?: return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { Moovit.stopArrivals(s, listOf(f.id)).first } }
             .onSuccess { found -> arrivals = arrivals + found }
@@ -313,6 +339,7 @@ fun LiveScreen(model: KavModel) {
     val patternId = focusVehicle?.arrival?.patternId ?: -1
     val pattern by produceState(emptyList<Int>(), patternId) {
         value = emptyList()
+        if (viaCurlbus) return@produceState
         val s = runCatching { Online.open() }.getOrNull() ?: return@produceState
         if (patternId > 0) value = withContext(Dispatchers.IO) {
             runCatching { Moovit.tripPattern(s, patternId) }.getOrDefault(emptyList())
@@ -331,7 +358,10 @@ fun LiveScreen(model: KavModel) {
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(T("Live", "כלי רכב בזמן אמת"), "")
         Text(
-            T(
+            if (viaCurlbus) T(
+                "Online mode: Moovit is unreachable, so arrivals come from the Ministry of Transport via curlbus.app, refreshed every ${pollSecs}s.",
+                "מצב מקוון: אין חיבור ל-Moovit, לכן ההגעות מגיעות ממשרד התחבורה דרך curlbus.app, מתעדכן כל ${pollSecs} שניות.",
+            ) else T(
                 "Online mode: positions come from Moovit's servers, refreshed every ${pollSecs}s.",
                 "מצב מקוון: המיקומים מגיעים משרתי Moovit, מתעדכן כל ${pollSecs} שניות.",
             ),

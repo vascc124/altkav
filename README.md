@@ -16,6 +16,9 @@
 > - **Live times on departure boards** and inside trips planned on the phone.
 > - **A fresh timetable every week**, rebuilt by a GitHub Action and downloaded by the app, no reinstall.
 > - Starts in Hebrew; long-press the icon for shortcuts to saved places; a small "+" on the icon.
+> - **YOLO** on the home screen: a Shabbat outing on the weekend lines, nature any day, lines that go far with
+>   few stops, or a surprise, ranked by travel time and the weather (places © OpenStreetMap contributors,
+>   weather by Open-Meteo).
 >
 > Everything else, and all the credit for the app itself, is upstream Kav. Same licence, GPL-3.0.
 

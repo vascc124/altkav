@@ -244,6 +244,7 @@ class KavModel(net: Net? = null, ctx: Context? = null) : ViewModel() {
 
     var tab by mutableStateOf(Tab.Directions)
     var settingsOpen by mutableStateOf(false)
+    var yoloOpen by mutableStateOf(false)
     var activeJourney by mutableStateOf<ActiveJourney?>(null)
     // AltKav+: what navigation says after a missed stop; replanHere asks for a new plan from where the rider is.
     var missedNotice by mutableStateOf<String?>(null)
@@ -720,6 +721,7 @@ private fun Shell(model: KavModel) {
     var exitAsk by remember { mutableStateOf(false) }
     BackHandler(enabled = !model.navigating) {
         when {
+            model.yoloOpen -> model.yoloOpen = false
             model.settingsOpen -> { model.settingsOpen = false; model.tab = Tab.Directions }
             model.tab != Tab.Directions -> {
                 model.stationStop = -1; model.lineRoute = -1; model.moovitLine = null
@@ -771,6 +773,15 @@ private fun Shell(model: KavModel) {
                     androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
             ) {
                 SettingsScreen(model) { model.settingsOpen = false }
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                model.yoloOpen,
+                enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(200)) +
+                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(240)) { it / 10 },
+                exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)) +
+                    androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(220)) { it / 10 },
+            ) {
+                YoloScreen(model) { model.yoloOpen = false }
             }
         }
         }

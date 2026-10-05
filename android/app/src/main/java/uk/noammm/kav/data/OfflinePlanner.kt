@@ -483,6 +483,123 @@ object OfflinePlanner {
         return best
     }
 
+    // ---- YOLO: how soon every place is reachable ----
+
+    /** Earliest arrival (seconds after [midnight]) at every stop from [from], and the line that brought you there. */
+    class Reach(val arr: IntArray, val line: IntArray, val t0: Int, val midnight: Long, val today: Int)
+
+    fun reach(net: Net, from: Pair<Double, Double>, atMs: Long, horizon: Int = 3 * 3600): Reach {
+        val midnight = israelMidnightUtc(atMs)
+        val today = Calendar.getInstance(ISRAEL).apply { timeInMillis = atMs }.get(Calendar.DAY_OF_WEEK) - 1
+        val t0 = (atMs / 1000 - midnight).toInt()
+        val links = links(net)
+        val nS = net.nStops; val nT = net.tripRoute.size
+        val arrT = IntArray(nS) { INF }; val boardT = IntArray(nS) { INF }; val line = IntArray(nS) { -1 }
+        val seen = Array(3) { BooleanArray(nT) }
+        for ((s, w) in around(net, from.first, from.second, ACCESS_M)) if (t0 + w < arrT[s]) { arrT[s] = t0 + w; boardT[s] = t0 + w }
+        val days = intArrayOf(today, (today + 6) % 7, (today + 1) % 7)
+        val cur = IntArray(3) { o -> lowerBound(net, t0 - OFFSETS[o]) }
+        val end = t0 + horizon
+        while (true) {
+            var o = -1; var tBest = INF
+            for (k in 0..2) { val i = cur[k]; if (i < net.cST.size) { val t = net.stDep[net.cST[i]] + OFFSETS[k]; if (t < tBest) { tBest = t; o = k } } }
+            if (o < 0 || tBest > end) break
+            val j = net.cST[cur[o]++]
+            val trip = net.tripOf(j)
+            if (!net.runsOn(trip, days[o])) continue
+            val from2 = net.stStop[j]
+            if (!seen[o][trip]) { if (boardT[from2] > tBest) continue; seen[o][trip] = true }
+            val to = net.stStop[j + 1]; val a = net.stDep[j + 1] + OFFSETS[o]
+            if (a < arrT[to]) {
+                arrT[to] = a; boardT[to] = a + MIN_CHANGE; line[to] = net.tripRoute[trip]
+                for (x in links.start[to] until links.start[to + 1]) {
+                    val nb = links.to[x]; val aw = a + links.secs[x]
+                    if (aw < arrT[nb]) { arrT[nb] = aw; boardT[nb] = aw; line[nb] = line[to] }
+                }
+            }
+        }
+        return Reach(arrT, line, t0, midnight, today)
+    }
+
+    class Reached(val place: Yolo.Place, val arriveUtc: Long, val minutes: Int, val walkM: Int, val line: String)
+
+    /** Each place's best arrival: a reached stop within [walkM] of it plus the walk, or walking there from [from]. */
+    fun reachPlaces(net: Net, r: Reach, from: Pair<Double, Double>, places: List<Yolo.Place>, walkM: Double): List<Reached> {
+        val g = grid(net)
+        val out = ArrayList<Reached>()
+        for (p in places) {
+            var best = INF; var bestWalk = 0; var bestLine = -1
+            // A park is reached at its edge, not its middle: take off a radius from its area.
+            val edge = if (p.size > 0) minOf(3000.0, sqrt(p.size * 10_000.0 / Math.PI) * 0.8) else 0.0
+            val rings = ((walkM + edge) / 350.0).toInt() + 1
+            val direct = maxOf(0.0, metres(from.first, from.second, p.lat, p.lon) - edge)
+            if (direct <= walkM) { best = r.t0 + walkSecs(direct); bestWalk = (direct * DETOUR).toInt() }
+            g.near(p.lat, p.lon, rings) { s ->
+                if (r.arr[s] < INF && r.line[s] >= 0) {
+                    val m = maxOf(0.0, metres(net, s, p.lat, p.lon) - edge)
+                    if (m <= walkM) {
+                        val t = r.arr[s] + walkSecs(m)
+                        if (t < best) { best = t; bestWalk = (m * DETOUR).toInt(); bestLine = r.line[s] }
+                    }
+                }
+            }
+            if (best < INF) out.add(Reached(p, r.midnight + best, (best - r.t0) / 60, bestWalk,
+                if (bestLine >= 0) lineLabel(net, bestLine) else ""))
+        }
+        return out
+    }
+
+    private fun metres(la1: Double, lo1: Double, la2: Double, lo2: Double): Double {
+        val dy = (la1 - la2) * 111_195.0; val dx = (lo1 - lo2) * 111_195.0 * cos(Math.toRadians(la1))
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    // Trains carry no line number: name them instead of leaving it blank (which would read as walking).
+    private fun lineLabel(net: Net, route: Int) =
+        net.rShort[route].ifBlank { if (net.rType[route] == 2) uk.noammm.kav.ui.T("Train", "רכבת") else net.agencyOf(route) }
+
+    // ---- YOLO: lines that go somewhere ----
+
+    class FarLine(val line: String, val boardName: String, val boardWalkM: Int, val depUtc: Long, val terminus: String,
+                  val terminusCity: String, val km: Int, val stops: Int, val minutes: Int, val to: Pair<Double, Double>)
+
+    /**
+     * Runs leaving from stops near [from] within [windowS] after [atMs] that go far (20 km or more) with few stops:
+     * one per line, best (distance per stop) first.
+     */
+    fun farLines(net: Net, from: Pair<Double, Double>, atMs: Long, windowS: Int = 3 * 3600): List<FarLine> {
+        val midnight = israelMidnightUtc(atMs)
+        val today = Calendar.getInstance(ISRAEL).apply { timeInMillis = atMs }.get(Calendar.DAY_OF_WEEK) - 1
+        val t0 = (atMs / 1000 - midnight).toInt()
+        val days = intArrayOf(today, (today + 6) % 7, (today + 1) % 7)
+        val best = HashMap<Int, Pair<Double, FarLine>>()
+        for ((s, w) in around(net, from.first, from.second, 800.0)) {
+            for (i in net.dStart[s] until net.dStart[s + 1]) {
+                val st = net.cST[net.dConn[i]]
+                val trip = net.tripOf(st)
+                for (o in 0..2) {
+                    val dep = net.stDep[st] + OFFSETS[o]
+                    if (dep < t0 + w || dep > t0 + windowS || !net.runsOn(trip, days[o])) continue
+                    val endK = net.tripStart[trip + 1] - 1
+                    val last = net.stStop[endK]
+                    val km = metres(net, last, net.lat[s], net.lon[s]) / 1000
+                    val stops = endK - st
+                    if (km < 20 || stops < 1) continue
+                    val score = km / (stops + 3)
+                    val route = net.tripRoute[trip]
+                    val prev = best[route]
+                    if (prev == null || score > prev.first) best[route] = score to FarLine(
+                        lineLabel(net, route),
+                        net.name[s], (w * WALK_MPS / DETOUR).toInt(), midnight + dep,
+                        net.name[last], net.cityOf(last), km.toInt(), stops, (net.stDep[endK] - net.stDep[st]) / 60,
+                        net.lat[last] to net.lon[last],
+                    )
+                }
+            }
+        }
+        return best.values.sortedByDescending { it.first }.map { it.second }
+    }
+
     const val SECTION = "Planned on your phone"
 
     fun LAST_TAG() = uk.noammm.kav.ui.T("Last one today", "האחרון להיום")

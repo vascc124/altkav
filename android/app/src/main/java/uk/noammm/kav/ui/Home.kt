@@ -138,21 +138,9 @@ internal fun HomeScreen(
                     }
                 }
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(K.gap3)) {
-                        Row(
-                            Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                            horizontalArrangement = Arrangement.spacedBy(K.gap3),
-                        ) {
-                            HomeShortcut(T("Found a bug?", "מצאתם באג?"), { drawBug() }, Modifier.weight(1f).fillMaxHeight()) {
-                                openLink(ctx, "$REPO_URL/issues/new?labels=bug&title=bug%3A%20")
-                            }
-                            HomeShortcut(T("Request a feature?", "רוצים פיצ'ר חדש?"), { drawBulb() }, Modifier.weight(1f).fillMaxHeight()) {
-                                openLink(ctx, "$REPO_URL/issues/new?labels=enhancement&title=feature%3A%20")
-                            }
-                        }
-                        HomeShortcut(T("Buy me a coffee", "קנו לי קפה"), { drawCoffee() }, Modifier.fillMaxWidth()) {
-                            openLink(ctx, COFFEE_URL)
-                        }
+                    // AltKav+: YOLO in place of the bug, feature and coffee shortcuts.
+                    HomeShortcut(T("YOLO · somewhere to go", "YOLO · לאן הולכים?"), { drawDice() }, Modifier.fillMaxWidth()) {
+                        model.yoloOpen = true
                     }
                 }
             }
@@ -293,6 +281,13 @@ private fun DrawScope.drawBulb() {
     drawCircle(K.accent, w * .24f, Offset(w * .5f, w * .38f), style = Stroke(w * .08f))
     drawLine(K.accent, Offset(w * .38f, w * .72f), Offset(w * .62f, w * .72f), w * .08f, StrokeCap.Round)
     drawLine(K.accent, Offset(w * .42f, w * .86f), Offset(w * .58f, w * .86f), w * .08f, StrokeCap.Round)
+}
+
+private fun DrawScope.drawDice() {
+    val w = size.width
+    drawRoundRect(K.accent, topLeft = Offset(w * .16f, w * .16f), size = Size(w * .68f, w * .68f),
+        cornerRadius = CornerRadius(w * .14f), style = Stroke(w * .08f))
+    for ((x, y) in listOf(.34f to .34f, .5f to .5f, .66f to .66f)) drawCircle(K.accent, w * .06f, Offset(w * x, w * y))
 }
 
 private fun DrawScope.drawCoffee() {

@@ -3,6 +3,8 @@
 package uk.noammm.kav.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
@@ -32,6 +34,9 @@ private data class OpenTrip(
     val resume: Boolean = false,
     val backHome: Boolean = false,
 )
+
+// A recent trip shown on the routes its search found, while the plan inputs are still the ones they answer.
+private class SavedTrip(val trip: RecentTrip, val key: List<Any?>)
 
 private enum class Sort(val labelText: () -> String) {
     RECOMMENDED({ T("Recommended", "מומלץ") }),
@@ -64,7 +69,10 @@ fun DirectionsOnline(model: KavModel) {
     var fromPlace by remember { mutableStateOf<Place?>(null) }
     var toPlace by remember { mutableStateOf<Place?>(null) }
     var picking by remember { mutableStateOf<String?>(null) }
+    // Places the rider wants to pass on the way, planned by Moovit in one request.
+    var stopovers by remember { mutableStateOf<List<Moovit.Place>>(emptyList()) }
     var showResults by remember { mutableStateOf(false) }
+    var hereOrigin by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     var plan by remember { mutableStateOf(Moovit.Plan()) }
     var raw by remember { mutableStateOf<List<Moovit.Itinerary>>(emptyList()) }
@@ -78,71 +86,127 @@ fun DirectionsOnline(model: KavModel) {
     var timeType by remember { mutableIntStateOf(Moovit.TIME_DEPARTURE) }
     var whenOpen by remember { mutableStateOf(false) }
     var orderOpen by remember { mutableStateOf(false) }
-    var autoOpen by remember { mutableStateOf<RecentTrip?>(null) }
+    var saved by remember { mutableStateOf<SavedTrip?>(null) }
     var linkTrip by remember { mutableStateOf<List<MoovitLink.Ride>?>(null) }
+    var openingLink by remember { mutableStateOf(false) }
+    var linkError by remember { mutableStateOf<String?>(null) }
+    var lastLink by remember { mutableStateOf<MoovitLink.Plan?>(null) }
     val filters = model.filters
 
     LaunchedEffect(model.returnHome) {
         if (model.returnHome) {
-            open = null; picking = null; showResults = false; autoOpen = null
+            open = null; picking = null; showResults = false; saved = null; linkTrip = null
+            model.pendingLink = null; linkError = null
             model.returnHome = false
         }
     }
 
     LaunchedEffect(model.pendingFrom, model.pendingTo) {
-        if (model.pendingFrom != null || model.pendingTo != null) showResults = true
+        if (model.pendingFrom != null || model.pendingTo != null) {
+            hereOrigin = null; stopovers = emptyList(); saved = null; showResults = true
+        }
         model.pendingFrom?.let { fromPlace = it; model.pendingFrom = null }
         model.pendingTo?.let { toPlace = it; model.pendingTo = null }
     }
 
     LaunchedEffect(model.pendingLink) {
-        val link = model.pendingLink ?: return@LaunchedEffect
-        model.pendingLink = null
-        val toLat = link.toLat ?: return@LaunchedEffect
-        val toLon = link.toLon ?: return@LaunchedEffect
+        val incoming = model.pendingLink ?: return@LaunchedEffect
+        lastLink = incoming; openingLink = true; linkError = null
+        hereOrigin = null; stopovers = emptyList()
+        open = null; saved = null; picking = null; linkTrip = null
+        fromPlace = null; toPlace = null; showResults = true
         fun place(name: String?, lat: Double, lon: Double) = Moovit.Place(
-            name ?: "%.5f, %.5f".format(java.util.Locale.US, lat, lon), "", lat, lon,
+            name?.takeIf { it.isNotBlank() } ?: "%.5f, %.5f".format(java.util.Locale.US, lat, lon), "", lat, lon,
         )
-        fromPlace = if (link.fromLat != null && link.fromLon != null) {
-            place(link.fromName, link.fromLat, link.fromLon)
-        } else null
-        toPlace = place(link.toName, toLat, toLon)
-        departAt = link.departMs
-        timeType = Moovit.TIME_DEPARTURE
-        open = null; autoOpen = null; picking = null
-        linkTrip = link.rides.takeIf { it.isNotEmpty() && link.autoRun }
-        showResults = link.autoRun
-    }
-
-    var hereOrigin by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    LaunchedEffect(showResults, fromPlace == null, here == null) {
-        hereOrigin = if (showResults && fromPlace == null) hereOrigin ?: here else null
-    }
-    val fromLL = fromPlace?.let { it.lat to it.lon } ?: hereOrigin ?: here
-    val toLL = toPlace?.let { it.lat to it.lon }
-    val fromIsHere = if (fromPlace == null) fromLL != null else isHere(fromPlace)
-
-    var findingHere by remember { mutableStateOf(false) }
-    LaunchedEffect(showResults, fromPlace == null, hereOrigin == null, here == null) {
-        val needsHere = showResults && fromPlace == null && hereOrigin == null && here == null
-        if (!needsHere) { findingHere = false; return@LaunchedEffect }
-        findingHere = true
-        requestLocationOnce(ctx, onFail = { findingHere = false }) {
-            model.locate(it.first, it.second)
-            findingHere = false
+        try {
+            val link = withContext(Dispatchers.IO) { MoovitLink.resolve(incoming) }
+            if (link.sharedId != null) {
+                val session = Online.open()
+                val (shared, details) = withContext(Dispatchers.IO) {
+                    val shared = Moovit.sharedItinerary(session, link.sharedId)
+                    shared to Moovit.hydrate(session, listOf(shared.trip))
+                }
+                val start = shared.from ?: shared.trip.legs.firstOrNull { it.shape.isNotEmpty() }?.shape?.firstOrNull()
+                    ?.let { place(T("Start", "התחלה"), it.first, it.second) }
+                val end = shared.to ?: shared.trip.legs.lastOrNull { it.shape.isNotEmpty() }?.shape?.lastOrNull()
+                    ?.let { place(T("Destination", "יעד"), it.first, it.second) }
+                fromPlace = start; toPlace = end
+                showResults = false
+                open = OpenTrip(shared.trip, details,
+                    start?.name?.takeIf { it.isNotBlank() } ?: T("Start", "התחלה"),
+                    end?.name?.takeIf { it.isNotBlank() } ?: T("Destination", "יעד"), backHome = true)
+            } else {
+                // A geo: link may name a place without a point: Kav's own place search finds it.
+                val found = if (link.toLat == null && link.toName != null) withContext(Dispatchers.IO) {
+                    Moovit.searchPlaces(Online.open(model.here ?: (32.0759 to 34.7745)), link.toName, model.here).firstOrNull()
+                } else null
+                val toLat = found?.lat ?: link.toLat ?: throw IllegalArgumentException("Missing destination coordinates")
+                val toLon = found?.lon ?: link.toLon ?: throw IllegalArgumentException("Missing destination coordinates")
+                fromPlace = if (link.fromLat != null && link.fromLon != null) place(link.fromName, link.fromLat, link.fromLon) else null
+                toPlace = found ?: place(link.toName, toLat, toLon)
+                departAt = link.departMs; timeType = Moovit.TIME_DEPARTURE
+                linkTrip = link.rides.takeIf { it.isNotEmpty() && link.autoRun }
+                showResults = link.autoRun
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) {
+            linkError = T("Couldn't open this shared trip. ${e.message.orEmpty()}", "לא ניתן לפתוח את הנסיעה המשותפת. ${e.message.orEmpty()}")
+        } finally {
+            openingLink = false
+            if (model.pendingLink === incoming) model.pendingLink = null
         }
     }
 
-    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters) {
-        if (!showResults) { planning = false; return@LaunchedEffect }
+    // A route pins the fresh position accepted for this search, never the map's cached preview.
+    val fromLL = fromPlace?.let { it.lat to it.lon } ?: hereOrigin
+    val toLL = toPlace?.let { it.lat to it.lon }
+    val fromIsHere = fromPlace == null || isHere(fromPlace)
+
+    var findingHere by remember { mutableStateOf(false) }
+    var findHereFailed by remember { mutableStateOf(false) }
+    var hereRetry by remember { mutableIntStateOf(0) }
+    DisposableEffect(showResults, fromPlace, hereOrigin, picking, hereRetry, openingLink, linkError) {
+        if (showResults && fromPlace == null && hereOrigin == null && picking == null && !openingLink && linkError == null) {
+            findingHere = true; findHereFailed = false
+            val stop = requestLocationOnce(ctx, requireFresh = true, onFail = {
+                findingHere = false; findHereFailed = true
+                linkTrip = null
+            }) {
+                hereOrigin = it
+                model.locate(it.first, it.second)
+                findingHere = false
+            }
+            onDispose { stop(); findingHere = false }
+        } else {
+            onDispose { }
+        }
+    }
+
+    // The inputs the results on screen were planned for: anything else is still being planned, never "no routes".
+    val planKey = listOf(fromLL, toLL, departAt, timeType, filters, stopovers)
+    var plannedFor by remember { mutableStateOf<List<Any?>?>(null) }
+    LaunchedEffect(showResults, fromLL, toLL, departAt, timeType, filters, stopovers, openingLink, saved) {
+        if (!showResults || openingLink) { planning = false; return@LaunchedEffect }
         if (departAt != 0L && departAt < System.currentTimeMillis() && timeType != Moovit.TIME_LAST) {
             departAt = 0L; timeType = Moovit.TIME_DEPARTURE
             return@LaunchedEffect
         }
         raw = emptyList(); resolved = Moovit.Resolved(); error = null
+        // A recent trip opens on the routes its search found, as Moovit's Recent Journeys do, until anything about
+        // the trip changes.
+        saved?.let { keep ->
+            if (keep.key != planKey) { saved = null; return@LaunchedEffect }
+            val found = withContext(Dispatchers.IO) { Prefs.savedRoutes(ctx, keep.trip) }
+            // A trip saved before its routes were kept plans afresh.
+            if (found == null) { saved = null; return@LaunchedEffect }
+            plan = Moovit.Plan(found.routes, found.sections)
+            raw = found.routes; resolved = found.resolved
+            planning = false; plannedFor = planKey
+            return@LaunchedEffect
+        }
         if (fromLL == null || toLL == null) { planning = false; return@LaunchedEffect }
         if (metres(fromLL.first, fromLL.second, toLL.first, toLL.second) < TOO_CLOSE_M) {
-            error = TOO_CLOSE; planning = false; return@LaunchedEffect
+            error = TOO_CLOSE; planning = false; linkTrip = null; return@LaunchedEffect
         }
         planning = true
         if (departAt != 0L) delay(250)
@@ -151,7 +215,9 @@ fun DirectionsOnline(model: KavModel) {
             val res = withContext(Dispatchers.IO) {
                 Moovit.planItineraries(
                     s, fromLL, toLL, departAt, timeType,
-                    routeTypes = routeTypesFor(filters), skipTaxi = ResultFilter.TAXI !in filters,
+                    routeTypes = routeTypesFor(filters),
+                    skipTaxi = stopovers.isNotEmpty() || ResultFilter.TAXI !in filters,
+                    stopovers = stopovers, toName = toPlace?.name,
                 )
             }
             plan = res
@@ -162,9 +228,9 @@ fun DirectionsOnline(model: KavModel) {
                         ?.let { raw = listOf(it) + raw }
                 }
             }
-            planning = false
             StopPhotos.prefetchIds(raw.flatMap { t -> t.rides.flatMap { r -> r.options.flatMap { listOf(it.fromStop, it.toStop) } } })
-            resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s, raw) }
+            val toHydrate = (raw + listOfNotNull(res.schedule())).distinct()
+            resolved = withContext(Dispatchers.IO) { Moovit.hydrate(s, toHydrate) }
             model.activeJourney?.takeIf { active -> raw.any { it === active.trip } }?.let {
                 model.activeJourney = it.copy(resolved = Moovit.Resolved(
                     it.resolved.lines + resolved.lines, it.resolved.stops + resolved.stops,
@@ -173,6 +239,25 @@ fun DirectionsOnline(model: KavModel) {
                     it.resolved.pollSecs, it.resolved.patterns + resolved.patterns,
                 ))
             }
+            // Every search that found routes becomes a recent trip with them, as in Moovit's Recent Journeys,
+            // which leave out the taxi card.
+            val dest = toPlace
+            val found = raw.filterNot(res::isTaxiCard)
+            if (dest != null && !isHere(dest) && found.isNotEmpty()) {
+                val start = fromPlace?.takeUnless(::isHere)
+                    ?: Place(T("Saved start", "נקודת ההתחלה השמורה"), "", fromLL.first, fromLL.second)
+                val trip = RecentTrip(start, dest, System.currentTimeMillis(), stopovers)
+                val details = resolved
+                withContext(Dispatchers.IO) { runCatching { Prefs.rememberTrip(ctx, trip, found, details, res.sections) } }
+            }
+            // Open only after this search and its stop/line details have arrived. A separate effect
+            // can otherwise see the previous search before this one has started.
+            val named = linkTrip
+            val match = named?.let { raw.firstOrNull { exactTrip(it, named) } ?: raw.firstOrNull { sameLines(it, named) } }
+            if (match != null) {
+                open = OpenTrip(match, resolved, fromPlace?.name ?: hereName(), toPlace?.name ?: T("Destination", "יעד"))
+            }
+            planning = false
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Moovit.PlannerRefusal) {
@@ -238,6 +323,8 @@ fun DirectionsOnline(model: KavModel) {
             )
             planning = false
         }
+        plannedFor = planKey
+        linkTrip = null
     }
 
     LaunchedEffect(showResults, raw, resolved.pollSecs, open?.trip, model.activeJourney?.trip) {
@@ -255,8 +342,11 @@ fun DirectionsOnline(model: KavModel) {
                 kotlinx.coroutines.delay(uk.noammm.kav.data.Curlbus.POLL_SECS * 1000L)
             }
         }
+        // A recent trip's saved routes have no live times yet: they come at once, as with a search.
+        var wait = saved == null || resolved.live.isNotEmpty()
         while (true) {
-            kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
+            if (wait) kotlinx.coroutines.delay(resolved.pollSecs.coerceIn(15, 120) * 1000L)
+            wait = true
             val s = runCatching { Online.open() }.getOrNull() ?: break
             val refreshed = withContext(Dispatchers.IO) { Moovit.refreshLive(s, otherTrips, resolved) }
             resolved = Moovit.Resolved(
@@ -283,42 +373,13 @@ fun DirectionsOnline(model: KavModel) {
         }
     }
 
-    LaunchedEffect(autoOpen, showResults, planning, shown.firstOrNull(), error) {
-        val taken = autoOpen ?: return@LaunchedEffect
-        if (!showResults) { autoOpen = null; return@LaunchedEffect }
-        if (planning) return@LaunchedEffect
-        autoOpen = null
-        if (error != null) return@LaunchedEffect
-        val again = shown.firstOrNull { sameRoute(it, taken) }
-            ?: shown.firstOrNull() ?: return@LaunchedEffect
-        open = OpenTrip(
-            again, resolved, fromPlace?.name ?: T("Current location", "המיקום הנוכחי"),
-            toPlace?.name ?: T("Destination", "יעד"), backHome = true,
-        )
-    }
-
-    LaunchedEffect(linkTrip, showResults, planning, raw, error) {
-        val named = linkTrip ?: return@LaunchedEffect
-        if (!showResults) { linkTrip = null; return@LaunchedEffect }
-        if (planning) return@LaunchedEffect
-        linkTrip = null
-        if (error != null) return@LaunchedEffect
-        val match = raw.firstOrNull { exactTrip(it, named) }
-            ?: raw.firstOrNull { sameLines(it, named) }
-            ?: return@LaunchedEffect
-        open = OpenTrip(
-            match, resolved, fromPlace?.name ?: T("Current location", "המיקום הנוכחי"),
-            toPlace?.name ?: T("Destination", "יעד"),
-        )
-    }
-
-    androidx.activity.compose.BackHandler(enabled = showResults && open == null && picking == null && autoOpen == null && linkTrip == null) {
+    androidx.activity.compose.BackHandler(enabled = showResults && open == null && picking == null && linkTrip == null) {
         showResults = false
     }
 
     val under by underSearch(picking != null)
     androidx.compose.animation.AnimatedContent(
-        targetState = Triple(open, showResults, autoOpen != null || linkTrip != null),
+        targetState = Triple(open, showResults, linkTrip != null || openingLink),
         modifier = Modifier.fillMaxSize().graphicsLayer { alpha = under },
         transitionSpec = {
             if (targetState.first != null || (targetState.second && !initialState.second)) forward()
@@ -342,19 +403,13 @@ fun DirectionsOnline(model: KavModel) {
                         model.journeyStep = 0
                         model.activeJourney = ActiveJourney(
                             chosen.trip, detailResolved, chosen.fromLabel, chosen.toLabel,
-                            from = fromPlace, to = toPlace,
                         )
                     }
                 },
                 onNavigating = { model.navigating = it },
+                onHome = { open = null; showResults = false },
                 onEnd = {
-                    val activeForTrip = model.activeJourney?.takeIf { it.trip === chosen.trip }
-                    if (activeForTrip != null) model.activeJourney = null
-                    val endFrom = (if (activeForTrip != null) activeForTrip.from else fromPlace)?.takeUnless(::isHere)
-                    val endTo = if (activeForTrip != null) activeForTrip.to else toPlace
-                    if (endTo != null && !isHere(endTo)) {
-                        Prefs.rememberTrip(ctx, endFrom, endTo, System.currentTimeMillis(), chosen.trip)
-                    }
+                    if (model.activeJourney?.trip === chosen.trip) model.activeJourney = null
                     open = null
                     showResults = false
                 },
@@ -365,18 +420,20 @@ fun DirectionsOnline(model: KavModel) {
     if (!displayingResults) {
         HomeScreen(
             model = model,
-            recentTrips = Prefs.trips(ctx).take(if (model.activeJourney != null) 2 else 3),
-            onSearch = { fromPlace = null; departAt = 0L; timeType = Moovit.TIME_DEPARTURE; picking = "to" },
+            recentTrips = Prefs.trips(ctx),
+            onSearch = { hereOrigin = null; stopovers = emptyList(); saved = null; linkError = null; fromPlace = null; departAt = 0L; timeType = Moovit.TIME_DEPARTURE; picking = "to" },
             onFavourite = { p ->
-                fromPlace = null; toPlace = p
+                hereOrigin = null; stopovers = emptyList(); saved = null; linkError = null; fromPlace = null; toPlace = p
                 departAt = 0L; timeType = Moovit.TIME_DEPARTURE
                 showResults = true
             },
             onSetFavourite = { f -> model.settingFavourite = f },
             onTrip = { t ->
-                fromPlace = t.from; toPlace = t.to
+                hereOrigin = null; stopovers = t.stopovers; linkError = null; fromPlace = t.from; toPlace = t.to
                 departAt = 0L; timeType = Moovit.TIME_DEPARTURE
-                autoOpen = t; showResults = true
+                saved = SavedTrip(t, listOf(t.from?.let { it.lat to it.lon }, t.to.lat to t.to.lon, 0L,
+                    Moovit.TIME_DEPARTURE, filters, t.stopovers))
+                showResults = true
             },
             onResume = {
                 model.activeJourney?.let { journey ->
@@ -391,7 +448,17 @@ fun DirectionsOnline(model: KavModel) {
 
     if (opening) {
         LoadingScreen(T("Finding your route", "מוצאים לכם מסלול")) {
-            autoOpen = null; linkTrip = null; showResults = false
+            linkTrip = null; model.pendingLink = null; openingLink = false; showResults = false
+        }
+        return@AnimatedContent
+    }
+
+    if (linkError != null) {
+        Column(Modifier.fillMaxSize()) {
+            ScreenHeader(T("Shared", "נסיעה"), T("trip", "משותפת"), back = { linkError = null; showResults = false })
+            Note(linkError.orEmpty(), Modifier.padding(K.gap4))
+            Text(T("Try again", "נסו שוב"), color = K.accent,
+                modifier = Modifier.clickable { model.pendingLink = lastLink }.padding(K.gap4))
         }
         return@AnimatedContent
     }
@@ -406,16 +473,20 @@ fun DirectionsOnline(model: KavModel) {
         ) {
             item(key = "trip") {
                 PlanHeader(
-                    from = endpointName(fromPlace) ?: if (fromLL != null) hereName() else T("Choose a start…", "בחרו נקודת התחלה…"),
+                    // With no start picked the trip starts where you are, so it says so even before the fix arrives.
+                    from = endpointName(fromPlace) ?: hereName(),
                     to = endpointName(toPlace) ?: T("Where do you want to go?…", "לאן תרצו להגיע?…"),
                     fromIsHere = fromIsHere,
                     toIsHere = isHere(toPlace),
                     onFrom = { picking = "from" },
                     onTo = { picking = "to" },
+                    stops = stopovers.map { it.name },
+                    onAddStop = { picking = "stop" },
+                    onRemoveStop = { i -> stopovers = stopovers.filterIndexed { j, _ -> j != i } },
                     onSwap = {
                         val a = fromPlace
                         fromPlace = toPlace
-                        toPlace = a ?: (hereOrigin ?: here)?.let(::herePlace)
+                        toPlace = a ?: hereOrigin?.let(::herePlace)
                     },
                     onBack = { showResults = false },
                 )
@@ -452,14 +523,19 @@ fun DirectionsOnline(model: KavModel) {
                         Modifier.padding(K.gap4),
                     )
                 }
+                fromLL == null && !findHereFailed -> item { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.fillParentMaxHeight(.6f)) }
                 fromLL == null -> item {
-                    Note(
-                        if (findingHere) T("Finding your location…", "מאתרים את המיקום שלכם…")
-                        else T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."),
-                        Modifier.padding(K.gap4),
-                    )
+                    Column(Modifier.padding(K.gap4)) {
+                        Note(
+                            if (findHereFailed) T("Couldn't get an accurate location. Try again or choose a start.",
+                                "לא התקבל מיקום מדויק. נסו שוב או בחרו נקודת התחלה.")
+                            else T("Choose a start to find routes.", "בחרו נקודת התחלה כדי למצוא מסלולים."),
+                        )
+                        if (findHereFailed && !findingHere) Text(T("Try again", "נסו שוב"), color = K.accent,
+                            modifier = Modifier.clickable { hereRetry++ }.padding(vertical = K.gap3))
+                    }
                 }
-                planning -> item { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.fillParentMaxHeight(.6f)) }
+                planning || plannedFor != planKey -> item { LoadingBlock(T("Finding routes", "מחפשים מסלולים"), Modifier.fillParentMaxHeight(.6f)) }
                 shown.isEmpty() -> item {
                     Note(
                         if (raw.isEmpty()) T("No routes found for this trip.", "לא נמצאו מסלולים לנסיעה הזו.")
@@ -483,9 +559,7 @@ fun DirectionsOnline(model: KavModel) {
                             Spacer(Modifier.weight(1f))
                             Text(
                                 shown.firstOrNull()?.let {
-                                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).apply {
-                                        timeZone = ISRAEL
-                                    }.format(java.util.Date(it.dep * 1000))
+                                    clockFormat().format(java.util.Date(it.dep * 1000))
                                 }.orEmpty(),
                                 fontSize = 12.sp, color = K.dim,
                             )
@@ -500,6 +574,23 @@ fun DirectionsOnline(model: KavModel) {
                             Modifier.padding(horizontal = K.gap4, vertical = K.gap2),
                         )
                     }
+                    // Moovit's "View schedules": the train between the two stations, opened for its departures.
+                    plan.schedule()?.takeIf { sort == Sort.RECOMMENDED }?.let { sched ->
+                        val ride = sched.rides.firstOrNull()
+                        val from = ride?.let { resolved.stopName(it.fromStop) }
+                        val to = ride?.let { resolved.stopName(it.toStop) }
+                        if (from != null && to != null) item(key = "schedule") {
+                            Column(
+                                Modifier.padding(horizontal = K.gap3).fillMaxWidth().panel(K.rCard)
+                                    .clickable(role = Role.Button) { open = OpenTrip(sched, resolved, from, to) }
+                                    .padding(K.gap4),
+                                verticalArrangement = Arrangement.spacedBy(K.gap1),
+                            ) {
+                                Text(T("View schedules", "לוחות זמנים"), fontSize = 15.sp, color = K.text, fontWeight = FontWeight.SemiBold)
+                                Text(T("From $from to $to", "מ$from אל $to"), fontSize = 14.sp, color = K.muted)
+                            }
+                        }
+                    }
                     items(shown.size) { i ->
                         Column(Modifier.padding(horizontal = K.gap3)) {
                             val heading = plan.heading(shown[i])
@@ -513,9 +604,6 @@ fun DirectionsOnline(model: KavModel) {
                             }
                             Box(Modifier.popIn(i, raw to sort)) {
                                 ItineraryCard(shown[i], resolved) {
-                                    toPlace?.let { to ->
-                                        if (!isHere(to)) Prefs.noteTripRoute(ctx, fromPlace?.takeUnless(::isHere), to, shown[i])
-                                    }
                                     open = OpenTrip(
                                         shown[i], resolved, fromPlace?.name ?: T("Current location", "המיקום הנוכחי"),
                                         toPlace?.name ?: T("Destination", "יעד"),
@@ -545,18 +633,28 @@ fun DirectionsOnline(model: KavModel) {
     ) { which ->
         if (which != null) {
         PlacePicker(
-            title = if (which == "from") T("start…", "התחלה…") else T("destination…", "יעד…"),
+            title = when (which) {
+                "from" -> T("start…", "התחלה…")
+                "stop" -> T("stop on the way…", "עצירה בדרך…")
+                else -> T("destination…", "יעד…")
+            },
             here = here,
-            allowMyLocation = which != "fav",
+            allowMyLocation = which != "fav" && which != "stop",
             initialSetting = if (which == "fav") settingFav else null,
             onMyLocation = { at ->
-                if (which == "from") fromPlace = null
-                else toPlace = herePlace(at)
+                if (which == "from") { fromPlace = null; hereOrigin = at }
+                else { toPlace = herePlace(at); if (fromPlace == null) hereOrigin = at }
                 picking = null
                 if (which != "from" || toPlace != null) showResults = true
                 model.placeQuery = ""
             },
             onPick = { p ->
+                if (which == "stop") {
+                    stopovers = stopovers + p
+                    picking = null; model.placeQuery = ""
+                    return@PlacePicker
+                }
+                hereOrigin = null
                 if (which == "from") fromPlace = p else toPlace = p
                 picking = null
                 if (which != "from" || toPlace != null) showResults = true
@@ -591,14 +689,6 @@ fun DirectionsOnline(model: KavModel) {
         onNow = { departAt = 0L; timeType = Moovit.TIME_DEPARTURE; whenOpen = false },
         onDismiss = { whenOpen = false },
     )
-}
-
-internal fun sameRoute(candidate: Moovit.Itinerary, taken: RecentTrip): Boolean {
-    if (taken.group < 0) return false
-    if (candidate.group != taken.group) return false
-    val rides = candidate.rides
-    if (rides.size != taken.lines.size) return false
-    return taken.lines.indices.all { i -> taken.lines[i] in rides[i].lineChoices }
 }
 
 internal fun exactTrip(candidate: Moovit.Itinerary, named: List<MoovitLink.Ride>): Boolean {
@@ -638,7 +728,7 @@ private fun whenLabel(departAt: Long, timeType: Int): String {
     val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
         now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
     val stamp = java.text.SimpleDateFormat(
-        if (sameDay) "HH:mm" else "EEE HH:mm", T.locale,
+        if (sameDay) CLOCK else "EEE $CLOCK", T.locale,
     ).apply { timeZone = ISRAEL }.format(java.util.Date(departAt))
     return when (timeType) {
         Moovit.TIME_ARRIVAL -> T("Arrive by ", "הגעה עד ") + stamp

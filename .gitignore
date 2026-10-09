@@ -30,3 +30,5 @@ android/app/src/test/
 # Kav+ release signing (key itself lives in ../kav-signing)
 android/keystore.properties
 *.jks
+# The private key that signs recipe/kav.json
+.signing/

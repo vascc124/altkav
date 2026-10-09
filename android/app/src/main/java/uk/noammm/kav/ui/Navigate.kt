@@ -5,6 +5,7 @@ package uk.noammm.kav.ui
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,11 +51,9 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.data.Moovit
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 internal sealed class Step {
     abstract val focus: List<Pair<Double, Double>>
@@ -178,7 +177,13 @@ fun NavigateScreen(
     }
     val here = model.here
     val fix = model.fix
+    // Where the map shows and follows you: the last sharp fix, or a rough one that came well after it.
+    val seen = model.roughFix?.takeIf { rough -> fix == null || rough.at > fix.at + 10 } ?: fix
     val currentStep = model.journeyStep.coerceIn(0, steps.lastIndex)
+    // The vehicle tapped on the map: its card takes the step cards' place until closed.
+    var tappedBus by remember(trip) { mutableStateOf<Long?>(null) }
+    val bus = chosenLegs(trip, chosen).firstOrNull { it.kind == Moovit.LegKind.RIDE && r.arrival(it)?.tripId == tappedBus }
+        ?.let { leg -> r.arrival(leg)?.takeIf { it.hasLocation }?.let { leg to it } }
     val pager = rememberPagerState(initialPage = currentStep) { steps.size }
     LaunchedEffect(currentStep) { pager.animateScrollToPage(currentStep) }
     val following = pager.settledPage == currentStep ||
@@ -194,8 +199,8 @@ fun NavigateScreen(
             val compact = contentHeight < 480.dp
             val panelWidth = (maxWidth * .46f).coerceIn(240.dp, 340.dp).coerceAtMost(maxWidth * .60f)
             val cardHeight = (contentHeight * .30f).coerceIn(160.dp, 240.dp)
-            NavigateMap(trip, r, steps.getOrNull(pager.settledPage), chosen, here, fix, model.heading, now,
-                following = following,
+            NavigateMap(trip, r, steps.getOrNull(pager.settledPage), chosen, here, seen, model.heading, now,
+                following = following, tapped = tappedBus, onTap = { tappedBus = it },
                 Modifier.fillMaxSize().glassBackdrop(liquid),
                 contentPadding = if (compact) PaddingValues(top = 96.dp, end = panelWidth, bottom = bottomInset + 12.dp)
                     else PaddingValues(top = 138.dp, bottom = cardHeight + 88.dp + bottomInset))
@@ -209,7 +214,7 @@ fun NavigateScreen(
                 ) {
                     Box(
                         Modifier.size(48.dp).clip(RoundedCornerShape(24.dp))
-                            .semantics { contentDescription = T("Back to the plan", "חזרה למסלול") }
+                            .semantics { contentDescription = T("Back to home", "חזרה לבית") }
                             .clickable(role = Role.Button, onClick = onExit),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -233,7 +238,7 @@ fun NavigateScreen(
                     scope.launch { pager.animateScrollToPage(target) }
                 }
                 model.missedNotice?.let { notice -> MissedBanner(notice, model.replanHere,
-                    onReplan = { model.missedNotice = null; model.replanHere = false; model.pendingTo = journey?.to; onPlan() },
+                    onReplan = { model.missedNotice = null; model.replanHere = false; model.pendingTo = journey?.destination; onPlan() },
                     onClose = { model.missedNotice = null; model.replanHere = false }) }
             }
 
@@ -248,6 +253,20 @@ fun NavigateScreen(
                     }
                     Spacer(Modifier.height(K.gap2))
                 }
+                androidx.compose.animation.AnimatedContent(
+                    targetState = bus,
+                    contentKey = { it != null },
+                    transitionSpec = {
+                        (androidx.compose.animation.slideInVertically(tween(260)) { it } + androidx.compose.animation.fadeIn(tween(200))) togetherWith
+                            (androidx.compose.animation.slideOutVertically(tween(220)) { it } + androidx.compose.animation.fadeOut(tween(160)))
+                    },
+                    modifier = if (compact) Modifier.weight(1f) else Modifier,
+                    contentAlignment = Alignment.BottomCenter,
+                    label = "busCard",
+                ) { showing ->
+                if (showing != null) {
+                    VehicleCard(showing.second, showing.first, r, now, Modifier.padding(horizontal = K.gap3).padding(bottom = K.gap3)) { tappedBus = null }
+                } else Column(if (compact) Modifier.fillMaxHeight() else Modifier) {
                 val ceiling = with(LocalDensity.current) { cardHeight.roundToPx() }
                 val pageHeights = remember(steps) { mutableStateMapOf<Int, Int>() }
                 HorizontalPager(
@@ -259,11 +278,13 @@ fun NavigateScreen(
                     verticalAlignment = Alignment.Bottom,
                     beyondViewportPageCount = 1,
                 ) { page ->
-                    Box(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
+                    Column(Modifier.fillMaxWidth().onSizeChanged { pageHeights[page] = it.height }.animateContentSize()) {
+                        CurrentStepButton(page, currentStep) { scope.launch { pager.animateScrollToPage(currentStep) } }
                         StepCard(
                             steps[page], r, active = page == currentStep, now = now,
                             chosen = chosen, fix = fix,
                             onChoose = ::choose,
+                            pay = { leg, ride -> TripPay(model, leg, ride, r) },
                         )
                     }
                 }
@@ -279,7 +300,29 @@ fun NavigateScreen(
                     Spacer(Modifier.weight(1f))
                     Text(T.ltr("${pager.currentPage + 1} / ${steps.size}"), fontSize = 12.sp, color = K.dim)
                 }
+                }
+                }
             }
+        }
+    }
+}
+
+@Composable
+internal fun CurrentStepButton(page: Int, current: Int, onClick: () -> Unit) {
+    if (page == current) return
+    val back = page > current
+    Row(Modifier.fillMaxWidth().padding(bottom = K.gap2),
+        horizontalArrangement = if (back) Arrangement.Start else Arrangement.End) {
+        Row(
+            Modifier.glassSurface(K.rControl).heightIn(min = 44.dp)
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(horizontal = K.gap3, vertical = K.gap2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(K.gap2),
+        ) {
+            if (back) Text(T.backward, color = K.text, fontSize = 22.sp)
+            Text(T("Current step", "השלב הנוכחי"), color = K.text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            if (!back) Text(T.onward, color = K.text, fontSize = 22.sp)
         }
     }
 }
@@ -287,7 +330,7 @@ fun NavigateScreen(
 @Composable
 private fun StepStrip(current: Int, count: Int, live: Int, goTo: (Int) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = K.gap3).glassSurface(24.dp)
+        Modifier.fillMaxWidth().padding(horizontal = K.gap3).glassSurface(K.rControl)
             .height(48.dp).padding(horizontal = K.gap2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -342,6 +385,8 @@ internal fun StepCard(
     chosen: Map<Int, Int> = emptyMap(),
     fix: Fix? = null,
     onChoose: (leg: Int, option: Int) -> Unit = { _, _ -> },
+    // The ride's payment, or its ticket once bought, on its riding card.
+    pay: (@Composable (legIndex: Int, ride: Moovit.Leg) -> Unit)? = null,
 ) {
     when (step) {
         is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
@@ -433,13 +478,21 @@ internal fun StepCard(
                 active,
                 trailing = T("${ride.minutes} min", "${ride.minutes} דק׳"),
             ) {
-                LineRow(ride, r)
-                Spacer(Modifier.height(K.gap2))
                 StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop)
+                Spacer(Modifier.height(K.gap2))
+                LineRow(ride, r)
+                // Above the stops, so a long ride's payment is in sight without scrolling.
+                pay?.invoke(step.legIndex, ride)
                 if (stops.size > 1) {
-                    Spacer(Modifier.height(K.gap2))
-                    Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
-                    Spacer(Modifier.height(K.gap2))
+                    // The rail draws its first stop 5 dp into its row, hence the 5 dp less above it.
+                    if (pay != null) {
+                        // The pay card already parts the line from the stops: the same gap below it as above.
+                        Spacer(Modifier.height(K.gap3 - 5.dp))
+                    } else {
+                        Spacer(Modifier.height(K.gap2))
+                        Box(Modifier.height(1.dp).fillMaxWidth().background(K.border))
+                        Spacer(Modifier.height(K.gap2 - 5.dp))
+                    }
                     StopRail(stops, names, stopsProgress(ride, names, arrival, fix, now), ride.arr)
                 }
             }
@@ -522,7 +575,7 @@ private fun StopRail(
                 ) {
                     Spacer(Modifier.width(20.dp + K.gap2))
                     Text(
-                        names[id]?.name ?: "#$id",
+                        names[id]?.name ?: "…",
                         fontSize = 13.sp,
                         color = if (done) K.dim else K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -629,10 +682,11 @@ private fun followFor(
             val along = bearingAlong(at.lat, at.lon, path)
             Follow(at.lat, at.lon, heading ?: along ?: 0f, zoom = 19.1f)
         }
+        // On board, the same view as walking: the map turns with the phone.
         is Step.Ride -> {
             val ride = chosenRide ?: return null
             val at = recent?.takeIf { it.isFresh(now) && it.aboard(ride.shape) } ?: return null
-            Follow(at.lat, at.lon, bearingAlong(at.lat, at.lon, ride.shape) ?: heading ?: 0f, zoom = 18.3f)
+            Follow(at.lat, at.lon, heading ?: bearingAlong(at.lat, at.lon, ride.shape) ?: 0f, zoom = 18.3f)
         }
         else -> null
     }
@@ -649,6 +703,8 @@ private fun NavigateMap(
     heading: Float?,
     now: Long,
     following: Boolean = true,
+    tapped: Long? = null,
+    onTap: (Long?) -> Unit = {},
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
 ) {
@@ -698,7 +754,8 @@ private fun NavigateMap(
     val mePulse = animateFloatAsState(if (here == null) 0f else 1f, tween(350), label = "meReveal")
     val vehicleAlpha = animateFloatAsState(if (vehicles.isEmpty()) 0f else 1f, tween(350), label = "vehicleReveal")
     val heldWalk = remember(step) { mutableStateOf(false) }
-    val follow = if (following) followFor(step, chosenRide, fix, heading, now, heldWalk.value) else null
+    // A ride's card follows the rider whenever they are on it, even before the trip has moved on to it.
+    val follow = if (following || step is Step.Ride) followFor(step, chosenRide, fix, heading, now, heldWalk.value) else null
     SideEffect { heldWalk.value = follow != null && step is Step.Walk }
     val fresh = fix?.takeIf { it.isFresh(now) }
 
@@ -734,13 +791,17 @@ private fun NavigateMap(
             } + boardingMarkers(rideLegsShapes, tints, r, r.stops + stopNames) + listOfNotNull(
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, K.bg, 7f) },
                 legs.first().shape.firstOrNull()?.let { (lat, lon) -> MapDot(lat, lon, Color.Transparent, 5f, K.text, 2f) },
-            ) + station.dots,
+            ),
             markers = station.markers,
             images = station.images,
         )
     }
 
-    val walkArrow = follow != null && step is Step.Walk && heading != null
+    val walkArrow = follow != null && heading != null
+    val vehicleMarks = vehicles.map { v ->
+        val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
+        v to ringedMark(vehicleModes[v.tripId] ?: Mode.BUS, tint, 12f, 10f, density)
+    }
     val live = MapGeometry(
         dots = buildList {
             here?.let { (lat, lon) ->
@@ -750,30 +811,79 @@ private fun NavigateMap(
                     add(MapDot(lat, lon, K.text.copy(alpha = mePulse.value), 5f))
                 }
             }
-            for (v in vehicles) {
-                val tint = if (v.vehicleStatus == 2) K.problem else K.live
-                add(MapDot(v.lat, v.lon, K.bg.copy(alpha = vehicleAlpha.value), 12f))
-                add(MapDot(v.lat, v.lon, tint.copy(alpha = vehicleAlpha.value), 10f))
-            }
         },
         markers = (
             if (walkArrow) here?.let { (lat, lon) ->
                 listOf(MapMarker(lat, lon, MAP_ARROW_ICON, heading ?: 0f, mePulse.value, turns = true))
             }.orEmpty() else emptyList()
-        ) + vehicles.map { v ->
-            MapMarker(v.lat, v.lon, modeIconName(vehicleModes[v.tripId] ?: Mode.BUS), alpha = vehicleAlpha.value)
-        },
+        ) + vehicleMarks.map { (v, mark) -> MapMarker(v.lat, v.lon, mark.first, alpha = vehicleAlpha.value) },
         halos = vehicles.map { v ->
-            val tint = if (v.vehicleStatus == 2) K.problem else K.live
+            val tint = if (v.vehicleStatus == 2) K.problem else K.realtime
             MapDot(v.lat, v.lon, tint.copy(alpha = 0.20f * vehicleAlpha.value), 20f)
         },
+        images = vehicleMarks.associate { it.second },
     )
 
-    TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
-        fitMaxZoom = if (step is Step.Walk || step is Step.Arrive) 18.4f else Geo.MAX_Z.toFloat(),
-        recenterOn = here, contentPadding = contentPadding, follow = follow,
-        geometry = geometry, live = live,
-    )
+    val reach = with(LocalDensity.current) { 36.dp.toPx() }
+    Box(Modifier.fillMaxSize()) {
+        TileMap(framedPoints, modifier, focusKey = step to chosenRide?.tripId,
+            fitMaxZoom = if (step is Step.Walk || step is Step.Arrive) 18.4f else Geo.MAX_Z.toFloat(),
+            recenterOn = here, contentPadding = contentPadding, follow = follow,
+            geometry = geometry, live = live,
+            onTap = { at, proj ->
+                onTap(vehicles.map { it to (proj.point(it.lat, it.lon) - at).getDistance() }
+                    .filter { it.second <= reach }.minByOrNull { it.second }?.first?.tripId
+                    ?.takeIf { it != tapped })
+            },
+        )
+    }
+}
+
+@Composable
+private fun VehicleCard(a: Moovit.Arrival, leg: Moovit.Leg, r: Moovit.Resolved, now: Long, modifier: Modifier, onClose: () -> Unit) {
+    Column(
+        modifier.fillMaxWidth().glassSurface(K.rCard).padding(K.gap4),
+        verticalArrangement = Arrangement.spacedBy(K.gap1),
+    ) {
+        val line = r.line(leg.lineId)
+        val number = leg.shortName.ifBlank { line?.number.orEmpty() }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                listOfNotNull(number.ifBlank { null }, line?.destination?.ifBlank { null }?.let { T("to $it", "אל $it") })
+                    .joinToString(" · "),
+                fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = K.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(K.rControl))
+                    .semantics { contentDescription = T("Close", "סגירה") }
+                    .clickable(role = Role.Button, onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) { Text("✕", fontSize = 16.sp, color = K.muted) }
+        }
+        val (headline, tint) = when {
+            a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
+            a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
+            else -> T("Location is estimated", "המיקום משוער") to K.problem
+        }
+        Text(headline, fontSize = 14.sp, color = tint)
+        if (a.sampleUtc > 0) Text(
+            T("Location updated: ${hm.format(Date(a.sampleUtc * 1000))}", "המיקום עודכן: ${hm.format(Date(a.sampleUtc * 1000))}"),
+            fontSize = 13.sp, color = K.dim,
+        )
+        val eta = a.rtUtc.takeIf { it > 0 } ?: a.staticUtc
+        r.stopName(a.stopId)?.takeIf { it.isNotBlank() && eta > 0 }?.let {
+            // Marked and coloured like the search results' departures.
+            val d = a.departure()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(T("At $it: ", "ב$it: "), fontSize = 13.sp, color = K.muted)
+                DepMarkGlyph(d, 12.dp); Spacer(Modifier.width(4.dp))
+                Text(whenLabel(eta, now), fontSize = 13.sp, color = depColour(d), fontWeight = FontWeight.SemiBold)
+            }
+        }
+        if (a.platform.isNotBlank()) Text(T("Platform ${a.platform}", "רציף ${a.platform}"), fontSize = 13.sp, color = K.muted)
+    }
 }
 
 internal fun rideStopPoints(legs: List<Moovit.Leg>, stops: Map<Int, Moovit.StopInfo>): List<Pair<Int, Pair<Double, Double>>> =

@@ -9,9 +9,13 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
@@ -29,6 +33,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,6 +57,8 @@ fun KavField(
     placeholder: String,
     modifier: Modifier = Modifier,
     autoFocus: Boolean = false,
+    keyboard: KeyboardType = KeyboardType.Text,
+    secret: Boolean = false,
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(autoFocus) { if (autoFocus) runCatching { focus.requestFocus() } }
@@ -59,18 +68,37 @@ fun KavField(
         singleLine = true,
         textStyle = TextStyle(color = K.text, fontSize = 15.sp),
         cursorBrush = SolidColor(K.text),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = keyboard,
+            imeAction = if (keyboard == KeyboardType.Text) ImeAction.Search else ImeAction.Done,
+        ),
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .glassSurface(24.dp)
+            .glassSurface(K.rControl)
             .focusRequester(focus)
             .semantics { contentDescription = placeholder }
             .padding(horizontal = K.gap4, vertical = 12.dp),
         decorationBox = { innerTextField ->
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
-                innerTextField()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) Text(placeholder, fontSize = 15.sp, color = K.dim)
+                    innerTextField()
+                }
+                // The same pop as the favourites' remove badge.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = value.isNotEmpty() && !secret,
+                    enter = scaleIn(spring(dampingRatio = .55f, stiffness = Spring.StiffnessMedium), initialScale = .5f) +
+                        fadeIn(tween(120)),
+                    exit = scaleOut(tween(140), targetScale = .5f) + fadeOut(tween(120)),
+                ) {
+                    Icon(
+                        Icons.Rounded.Close, contentDescription = T("Clear", "ניקוי"), tint = K.dim,
+                        modifier = Modifier.padding(start = K.gap2).size(20.dp).clip(CircleShape)
+                            .clickable(role = Role.Button) { onValue("") },
+                    )
+                }
             }
         },
     )
@@ -138,8 +166,15 @@ fun PlacePicker(
     var setting by remember { mutableStateOf(initialSetting) }
     var editing by remember { mutableStateOf<Favourite?>(null) }
     var creating by remember { mutableStateOf(false) }
+    var locating by remember { mutableStateOf(false) }
+    var locateFailed by remember { mutableStateOf(false) }
+    var shown by remember { mutableStateOf(true) }
+    var stopLocating by remember { mutableStateOf<(() -> Unit)?>(null) }
+    DisposableEffect(Unit) { onDispose { shown = false; stopLocating?.invoke() } }
+    fun cancelLocation() { stopLocating?.invoke(); stopLocating = null; locating = false }
     fun save(list: List<Favourite>) = onSaveFavourites(list)
     val pick: (Moovit.Place) -> Unit = { p ->
+        cancelLocation()
         val f = setting
         if (f != null) {
             save(favourites.map { if (it.id == f.id) it.copy(place = p) else it })
@@ -200,12 +235,54 @@ fun PlacePicker(
                 }
             }
         }
+        val address = async(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                uk.noammm.kav.data.Addresses.find(q, at)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        val google = async(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                uk.noammm.kav.data.GoogleMaps.suggest(q, at)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+        }
         val waited = kotlinx.coroutines.withTimeoutOrNull(3000) { online.await() }
         stations = near.await()
         busy = waited == null && stations.isEmpty()
         val answer = waited ?: online.await()
-        places = answer.getOrDefault(emptyList())
-        error = answer.exceptionOrNull()?.takeIf { stations.isEmpty() }?.let { it.message ?: it.javaClass.simpleName }
+        val typed = kotlinx.coroutines.withTimeoutOrNull(3000) { google.await() }
+        // A typo gets no places from Google, only the text it would correct it to, so its places come from that text.
+        val suggested = typed?.queries?.firstOrNull()?.takeIf { typed.places.isEmpty() }?.let { fixed ->
+            kotlinx.coroutines.withTimeoutOrNull(3000) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { uk.noammm.kav.data.GoogleMaps.suggest(fixed, at) }.getOrNull()
+                }
+            }?.let { again -> uk.noammm.kav.data.GoogleMaps.Suggestions(again.places, typed.queries) }
+        } ?: typed
+        // A typo Google corrects ("תחנת רכת חדרה") still finds the station, under the first correction that names one.
+        val fixes = suggested?.queries.orEmpty().take(3)
+        if (stations.isEmpty() && fixes.isNotEmpty()) stations = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching {
+                val n = net ?: uk.noammm.kav.loadNet(ctx)
+                fixes.asSequence().map { fixed -> n.stopsMatching(fixed, at) { modeName(modeOf(it)) } }
+                    .firstOrNull { it.isNotEmpty() }.orEmpty().map { placeOf(n, it) }
+            }.getOrDefault(emptyList())
+        }
+        val exact = kotlinx.coroutines.withTimeoutOrNull(3000) { address.await() }.orEmpty()
+        // Moovit's app lists Google's places, so Kav does too, with Moovit's own search standing in when Google has
+        // none. A suggested address only knows its street's position, so it gives way to the house itself.
+        val number = uk.noammm.kav.data.searchWords(q).firstOrNull { it.first().isDigit() }
+        val fromGoogle = suggested?.places.orEmpty()
+            .filter { p -> number == null || uk.noammm.kav.data.searchWords(p.name).none { it == number } }
+        places = (exact + fromGoogle.ifEmpty { answer.getOrDefault(emptyList()) }).take(5)
+        error = answer.exceptionOrNull()?.takeIf { stations.isEmpty() && places.isEmpty() }?.let { it.message ?: it.javaClass.simpleName }
         busy = false
     }
 
@@ -217,25 +294,27 @@ fun PlacePicker(
         )
         return
     }
-    val leave: () -> Unit = { if (setting != null && initialSetting == null) setting = null else onDismiss() }
+    val leave: () -> Unit = {
+        cancelLocation()
+        if (setting != null && initialSetting == null) setting = null else onDismiss()
+    }
     androidx.activity.compose.BackHandler(onBack = leave)
-    var locating by remember { mutableStateOf(false) }
-    var locateFailed by remember { mutableStateOf(false) }
-    var shown by remember { mutableStateOf(true) }
-    DisposableEffect(Unit) { onDispose { shown = false } }
     fun startLocating() {
+        stopLocating?.invoke()
         locating = true; locateFailed = false
-        var used = false
-        requestLocationOnce(ctx, onFail = { locating = false; locateFailed = true }) {
+        stopLocating = requestLocationOnce(ctx, requireFresh = true, onFail = {
+            if (shown) { locating = false; locateFailed = true }
+        }) {
+            if (!shown) return@requestLocationOnce
             onLocate(it)
-            if (!used && shown) { used = true; onMyLocation(it) }
             locating = false
+            onMyLocation(it)
         }
     }
     val askHere = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { granted ->
-        if (granted.values.any { it }) startLocating() else locating = false
+        if (shown && granted.values.any { it }) startLocating() else locating = false
     }
     LaunchedEffect(here == null) {
         if (allowMyLocation && here == null && hasLocationPermission(ctx)) requestLocationOnce(ctx, onResult = onLocate)
@@ -276,15 +355,14 @@ fun PlacePicker(
                 )
             }
         }
-        item(key = "map") { SelectOnMapRow { onMap = true } }
+        item(key = "map") { SelectOnMapRow { cancelLocation(); onMap = true } }
         if (allowMyLocation) item(key = "here") {
-            val ready = here != null
+            val ready = here != null && !locating && !locateFailed
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2).heightIn(min = 48.dp)
-                    .glassSurface(24.dp)
-                    .clickable(role = Role.Button) {
-                        if (ready) here?.let(onMyLocation)
-                        else if (hasLocationPermission(ctx)) startLocating()
+                    .glassSurface(K.rControl)
+                    .clickable(enabled = !locating, role = Role.Button) {
+                        if (hasLocationPermission(ctx)) startLocating()
                         else askHere.launch(LOCATION_PERMISSIONS)
                     }
                     .padding(horizontal = K.gap4, vertical = K.gap3),
@@ -295,9 +373,9 @@ fun PlacePicker(
                         .background(if (ready) K.live else K.dim),
                 )
                 Text(
-                    if (ready) T("My location", "המיקום שלי")
-                    else if (locating) T("Finding you…", "מאתרים אתכם…")
-                    else if (locateFailed) T("Couldn't find your location", "לא הצלחנו למצוא את המיקום שלכם")
+                    if (locating) T("Finding you…", "מאתרים אתכם…")
+                    else if (locateFailed) T("Couldn't get an accurate location. Tap to retry", "לא התקבל מיקום מדויק. לחצו לנסות שוב")
+                    else if (ready) T("My location", "המיקום שלי")
                     else T("Use my location", "השתמשו במיקום שלי"),
                     fontSize = 15.sp, color = if (ready) K.live else K.muted,
                 )
@@ -374,7 +452,7 @@ fun PlacePicker(
 internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = sides)
-            .heightIn(min = 48.dp).glassSurface(24.dp)
+            .heightIn(min = 48.dp).glassSurface(K.rControl)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = K.gap4, vertical = K.gap3),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(K.gap2),
@@ -388,6 +466,7 @@ internal fun SelectOnMapRow(sides: androidx.compose.ui.unit.Dp = K.gap3, onClick
     }
 }
 
+// Rises in like search does, wherever it opens from.
 @Composable
 fun StopMapPicker(
     net: Net?,
@@ -397,6 +476,23 @@ fun StopMapPicker(
     onLocate: (Pair<Double, Double>) -> Unit = {},
     allowPin: Boolean = false,
     onStop: ((Int) -> Unit)? = null,
+) {
+    val rise = with(androidx.compose.ui.platform.LocalDensity.current) { 76.dp.roundToPx() }
+    val shown = remember { androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true } }
+    androidx.compose.animation.AnimatedVisibility(shown, enter = searchIn(rise).targetContentEnter) {
+        MapPickerScreen(net, here, onPick, onDismiss, onLocate, allowPin, onStop)
+    }
+}
+
+@Composable
+private fun MapPickerScreen(
+    net: Net?,
+    here: Pair<Double, Double>?,
+    onPick: (Moovit.Place) -> Unit,
+    onDismiss: () -> Unit,
+    onLocate: (Pair<Double, Double>) -> Unit,
+    allowPin: Boolean,
+    onStop: ((Int) -> Unit)?,
 ) {
     androidx.activity.compose.BackHandler { onDismiss() }
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -441,7 +537,7 @@ private fun StopMapHeader(pin: Boolean, onDismiss: () -> Unit) {
     ) {
         BackButton(onDismiss)
         Box(
-            Modifier.heightIn(min = 48.dp).glassSurface(24.dp).padding(horizontal = K.gap4),
+            Modifier.heightIn(min = 48.dp).glassSurface(K.rControl).padding(horizontal = K.gap4),
             contentAlignment = Alignment.Center,
         ) {
             Text(

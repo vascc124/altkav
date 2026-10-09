@@ -46,7 +46,7 @@ object K {
 
     val rCard = 22.dp
     val rControl = 16.dp
-    val rPill = 999.dp
+    val rPill = 16.dp
 
     var accent by mutableStateOf(DefaultAccent)
     // Text on an accent fill: dark on a pale accent (every Kav look), white on a deep one (YOU by day).
@@ -56,6 +56,8 @@ object K {
     var routeIdle by mutableStateOf(Color(0xFF7E7E87))
     var problem by mutableStateOf(Color(0xFFE7C17A))
     var critical by mutableStateOf(Color(0xFFEE929A))
+    // Moovit's green for a time or position measured live.
+    var realtime by mutableStateOf(Color(0xFF04C876))
     val scheduled get() = muted
 
     val gap1 = 4.dp; val gap2 = 8.dp; val gap3 = 12.dp
@@ -122,22 +124,24 @@ object K {
             Look.DARK -> {
                 bg = Color(0xFF101012); surface1 = Color(0xFF202023)
                 surface2 = Color(0xFF2B2B30); surface3 = Color(0xFF343439)
-                surface4 = Color(0xFF44444A); border = Color(0xFF343439)
+                surface4 = Color(0xFF44444A); border = Color.White
                 borderStrong = Color(0xFF74747D); dim = Color(0xFF9C9CA5)
                 muted = Color(0xFFC7C7CE); text = Color(0xFFF5F5F7)
                 plate = Color(0x0FFFFFFF); plateStrong = Color(0x1FFFFFFF)
                 sunken = Color(0xFF19191C); routeIdle = Color(0xFF7E7E87)
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
+                realtime = Color(0xFF04C876)
             }
             Look.OLED -> {
-                bg = Color(0xFF000000); surface1 = Color(0xFF151517)
-                surface2 = Color(0xFF1E1E21); surface3 = Color(0xFF28282C)
-                surface4 = Color(0xFF38383E); border = Color(0xFF222226)
+                bg = Color(0xFF000000); surface1 = Color(0xFF000000)
+                surface2 = Color(0xFF000000); surface3 = Color(0xFF000000)
+                surface4 = Color(0xFF38383E); border = Color.White
                 borderStrong = Color(0xFF6C6C75); dim = Color(0xFF9C9CA5)
                 muted = Color(0xFFC7C7CE); text = Color(0xFFF5F5F7)
                 plate = Color(0x14FFFFFF); plateStrong = Color(0x24FFFFFF)
-                sunken = Color(0xFF0A0A0C); routeIdle = Color(0xFF7E7E87)
+                sunken = Color(0xFF000000); routeIdle = Color(0xFF7E7E87)
                 problem = Color(0xFFE7C17A); critical = Color(0xFFEE929A)
+                realtime = Color(0xFF04C876)
             }
             Look.LIGHT -> {
                 bg = Color(0xFFF6F6F3); surface1 = Color(0xFFEBEBE7)
@@ -148,6 +152,7 @@ object K {
                 plate = Color(0x0D000000); plateStrong = Color(0x1A000000)
                 sunken = Color(0xFFEFEFEB); routeIdle = Color(0xFFA6A6AE)
                 problem = Color(0xFF9A6A00); critical = Color(0xFFB3424E)
+                realtime = Color(0xFF00804C)
             }
         }
     }
@@ -155,6 +160,7 @@ object K {
 
 object Shown {
     var co2 by mutableStateOf(false)
+    var twelveHour by mutableStateOf(false)
 }
 
 val Display get() = TextStyle(

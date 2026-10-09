@@ -16,9 +16,10 @@ android {
         minSdk = 26
         targetSdk = 35
         // AltKav+ build numbers only rise: "<upstream major.minor>.p<n>" with n counting every AltKav+
-        // release, since Updates.isNewer compares digit by digit. 2.1.p10 is based on upstream Kav 2.1.1.
-        versionCode = 2115
-        versionName = "2.1.p15"
+        // release, since Updates.isNewer compares digit by digit. 2.4.p16 is based on upstream Kav 2.4.1
+        // (versionCode = upstream code × 100 + n).
+        versionCode = 2716
+        versionName = "2.4.p16"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Kav+: when the bundled timetable was built, so TimetableUpdate only fetches a newer week.
         val bundled = file("src/main/assets/il.kav").takeIf { it.exists() }?.lastModified() ?: 0L
@@ -77,6 +78,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.maplibre.gl:android-sdk:12.3.1")
+    // Reading a bus QR code with the camera, and drawing a ticket's QR for the inspector.
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.zxing:core:3.5.4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")

@@ -2,6 +2,8 @@
 
 package uk.noammm.kav.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,11 +37,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uk.noammm.kav.data.Moovit
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 @Composable
 private fun Chevron(tint: Color = K.surface4, size: androidx.compose.ui.unit.Dp = 12.dp) {
@@ -72,7 +73,7 @@ internal fun ClockGlyph(tint: Color = K.muted, size: androidx.compose.ui.unit.Dp
 }
 
 @Composable
-fun LiveGlyph(tint: Color = K.live, size: androidx.compose.ui.unit.Dp = 11.dp) {
+fun LiveGlyph(tint: Color = K.realtime, size: androidx.compose.ui.unit.Dp = 11.dp) {
     Canvas(Modifier.size(size)) {
         val w = this.size.width; val h = this.size.height; val sw = w * .11f
         drawCircle(tint, w * .13f, Offset(w * .24f, h * .80f))
@@ -113,28 +114,13 @@ fun WarnGlyph(tint: Color = K.critical, size: androidx.compose.ui.unit.Dp = 11.d
 }
 
 @Composable
-fun DelayGlyph(tint: Color = K.problem, size: androidx.compose.ui.unit.Dp = 11.dp) {
-    Canvas(Modifier.size(size)) {
-        val w = this.size.width; val sw = w * .11f
-        drawArc(
-            tint, startAngle = 40f, sweepAngle = 285f, useCenter = false,
-            topLeft = Offset(w * .06f, w * .06f),
-            size = androidx.compose.ui.geometry.Size(w * .88f, w * .88f),
-            style = Stroke(sw, cap = StrokeCap.Round),
-        )
-        drawLine(tint, Offset(w * .5f, w * .5f), Offset(w * .5f, w * .26f), sw, StrokeCap.Round)
-        drawLine(tint, Offset(w * .5f, w * .5f), Offset(w * .72f, w * .60f), sw, StrokeCap.Round)
-    }
-}
-
-@Composable
 fun DepMarkGlyph(d: Moovit.Departure, size: androidx.compose.ui.unit.Dp = 11.dp) {
     val tint = depColour(d)
     when (depMark(d)) {
         DepMark.LIVE, DepMark.LIVE_STILL -> LiveGlyph(tint, size)
         DepMark.LIVE_OFF -> LiveOffGlyph(tint, size)
         DepMark.WARNING -> WarnGlyph(tint, size)
-        DepMark.DELAY -> DelayGlyph(tint, size)
+        DepMark.DELAY -> ClockGlyph(tint, size)
         DepMark.CLOCK -> ClockGlyph(K.muted, size)
         DepMark.NONE -> Unit
     }
@@ -171,20 +157,53 @@ fun PlanHeader(
     onTo: () -> Unit,
     onSwap: () -> Unit,
     onBack: (() -> Unit)? = null,
+    stops: List<String> = emptyList(),
+    onAddStop: (() -> Unit)? = null,
+    onRemoveStop: (Int) -> Unit = {},
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = K.gap3, vertical = K.gap2)) {
+    Column(Modifier.fillMaxWidth().animateContentSize(tween(260)).padding(horizontal = K.gap3, vertical = K.gap2)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) { BackButton(onBack); Spacer(Modifier.width(K.gap2)) }
 
             Box(Modifier.weight(1f)) {
                 Column {
                     Endpoint(from, here = fromIsHere, dot = false, onClick = onFrom)
+                    stops.forEachIndexed { i, name ->
+                        Spacer(Modifier.height(K.gap2))
+                        StopoverRow(name) { onRemoveStop(i) }
+                    }
                     Spacer(Modifier.height(K.gap2))
                     Endpoint(to, here = toIsHere, dot = true, onClick = onTo)
                 }
-                SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
+                if (stops.isEmpty()) SwapControl(Modifier.align(Alignment.CenterEnd).padding(end = K.gap2), onSwap)
             }
         }
+        // Up to three stops on the way, like Moovit's own planner.
+        if (onAddStop != null && stops.size < MAX_STOPOVERS) Text(
+            T("+ Add a stop", "+ הוספת עצירה"), fontSize = 14.sp, color = K.accent,
+            modifier = Modifier.padding(start = if (onBack != null) 52.dp else 0.dp, top = K.gap2)
+                .clip(RoundedCornerShape(K.rPill)).clickable(role = Role.Button, onClick = onAddStop)
+                .padding(horizontal = K.gap2, vertical = 6.dp),
+        )
+    }
+}
+
+const val MAX_STOPOVERS = 3
+
+@Composable
+private fun StopoverRow(label: String, onRemove: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).glassSurface(K.rControl).padding(start = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(10.dp)) { drawCircle(K.muted, size.width * .30f) }
+        Spacer(Modifier.width(10.dp))
+        Text(label, fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(48.dp).semantics { contentDescription = T("Remove stop", "הסרת עצירה") }
+                .clickable(role = Role.Button, onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) { Text("✕", fontSize = 14.sp, color = K.dim) }
     }
 }
 
@@ -246,7 +265,7 @@ fun DepartRow(label: String, onWhen: () -> Unit, order: String, onOrder: () -> U
 @Composable
 private fun MenuPill(label: String, onClick: () -> Unit) {
     Row(
-        Modifier.heightIn(min = 44.dp).glassSurface(K.rPill)
+        Modifier.heightIn(min = 44.dp).glassSurface(K.rControl)
             .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -332,18 +351,18 @@ internal fun PlatformTag(platform: String) {
     }
 }
 
+// One badge per ride, as Moovit draws it: every line that can take it, "90 / 29 / 27".
 @Composable
-internal fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        ride.lineChoices.forEachIndexed { index, id ->
-            if (index > 0) Text("/", fontSize = 14.sp, color = K.dim, modifier = Modifier.padding(top = 4.dp))
-            LineBadgeOnline(id, ride.options.firstOrNull { it.lineId == id }?.shortName.orEmpty(), r)
-        }
-    }
+private fun RouteChoices(ride: Moovit.Leg, r: Moovit.Resolved) {
+    val labels = ride.lineChoices.mapNotNull { id ->
+        ride.options.firstOrNull { it.lineId == id }?.shortName?.ifBlank { null } ?: r.line(id)?.number?.ifBlank { null }
+    }.distinct()
+    // A long list wraps after a slash, never between a number and its slash.
+    LineBadgeOnline(ride.lineId, labels.joinToString(" / ") { it.replace(' ', '\u00A0') }.replace(" /", "\u00A0/"), r)
 }
 
 fun depColour(d: Moovit.Departure): Color = when (d.state) {
-    Moovit.TimeState.REAL_TIME, Moovit.TimeState.REAL_TIME_HIGH -> K.live
+    Moovit.TimeState.REAL_TIME, Moovit.TimeState.REAL_TIME_HIGH -> K.realtime
     Moovit.TimeState.REAL_TIME_MEDIUM -> K.problem
     Moovit.TimeState.REAL_TIME_LOW, Moovit.TimeState.OUT_OF_SHAPE -> K.critical
     Moovit.TimeState.REAL_TIME_DROPPED, Moovit.TimeState.CANCELED -> K.dim
@@ -455,20 +474,25 @@ private fun stripItems(it: Moovit.Itinerary): List<StripItem> {
     return out.filter { s -> s.kind != Moovit.LegKind.WALK || s.minutes >= 1 }
 }
 
-private fun showMinutes(index: Int, leg: StripItem): Boolean =
-    index == 0 && leg.minutes >= 5
+private fun showMinutes(leg: StripItem): Boolean = leg.minutes >= 5
 
 private val PIP_OVERHANG = 5.dp
 
 @Composable
-private fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
+internal fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
     val shown = stripItems(it)
     FlowRow(
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         shown.forEachIndexed { i, leg ->
-            if (i > 0) Box(Modifier.height(28.dp), contentAlignment = Alignment.Center) { Chevron(size = 11.dp) }
+            // Each arrow travels with the step after it, so a wrapped row never leaves one at a line's end.
+            Row(
+                Modifier.align(Alignment.CenterVertically),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+            if (i > 0) Chevron(size = 11.dp)
             when (leg.kind) {
                 Moovit.LegKind.RIDE -> Box(
                     Modifier.padding(vertical = PIP_OVERHANG, horizontal = PIP_OVERHANG),
@@ -491,7 +515,7 @@ private fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
                     Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BikeGlyph()
-                    if (showMinutes(i, leg)) {
+                    if (showMinutes(leg)) {
                         Spacer(Modifier.width(4.dp))
                         Text("${leg.minutes}", fontSize = 14.sp, color = K.text)
                     }
@@ -500,11 +524,12 @@ private fun RouteStrip(it: Moovit.Itinerary, r: Moovit.Resolved) {
                     Modifier.height(28.dp), verticalAlignment = Alignment.CenterVertically,
                 ) {
                     WalkGlyph(K.muted, 18.dp)
-                    if (showMinutes(i, leg)) {
+                    if (showMinutes(leg)) {
                         Spacer(Modifier.width(4.dp))
                         Text("${leg.minutes}", fontSize = 14.sp, color = K.text)
                     }
                 }
+            }
             }
         }
     }
@@ -518,7 +543,7 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
     val label = shortName.ifBlank { null } ?: info?.number?.ifBlank { null }
     val plate = plateFor(rt, agency)
     Column(
-        Modifier.width(IntrinsicSize.Min).clip(RoundedCornerShape(6.dp)).background(plate?.fill ?: K.badgePlate)
+        Modifier.clip(RoundedCornerShape(6.dp)).background(plate?.fill ?: K.badgePlate)
             .border(1.dp, plate?.edge ?: K.borderStrong, RoundedCornerShape(6.dp)),
     ) {
         Row(
@@ -530,8 +555,7 @@ private fun LineBadgeOnline(lineId: Int, shortName: String, r: Moovit.Resolved) 
                 Spacer(Modifier.width(4.dp))
                 Text(
                     label, fontSize = 15.sp, color = plate?.ink ?: K.text, fontWeight = FontWeight.Medium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 120.dp),
+                    maxLines = 3, overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -596,16 +620,21 @@ private fun DepartureLine(it: Moovit.Itinerary, r: Moovit.Resolved, now: Long) {
             if (stop != null) {
                 withStyle(SpanStyle(color = K.dim)) {
                     append(if (labels.isEmpty()) T("From ", "מ־") else T(" from ", " מ־"))
-                    append(stop)
+                    // Isolated, so a Hebrew name in an English line doesn't pull the fare's bullet to its other side.
+                    append("\u2068$stop\u2069")
                 }
             }
             if (fare != null) withStyle(SpanStyle(color = K.dim)) { append(" • $fare") }
         },
         inlineContent = mapOf(
+            // The mark keeps a little room of its own, so the first time never touches it.
             MARK to InlineTextContent(
-                Placeholder(13.sp, 13.sp, PlaceholderVerticalAlign.TextCenter),
+                Placeholder(17.sp, 13.sp, PlaceholderVerticalAlign.TextCenter),
             ) {
-                lead?.let { DepMarkGlyph(it, 13.dp) }
+                val size = with(androidx.compose.ui.platform.LocalDensity.current) { 13.sp.toDp() }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                    lead?.let { DepMarkGlyph(it, size) }
+                }
             },
         ),
         fontSize = 13.sp, color = K.dim, lineHeight = 18.sp,

@@ -1,5 +1,6 @@
 package uk.noammm.kav.data
 
+import android.os.Build
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,17 +16,18 @@ class MoovitSession(
 )
 
 object Moovit {
-    const val APP_ID = "moovit_2751703405"
-    const val CLIENT_VERSION = "5.199.1.1804"
-    private const val APP4 = "https://app4.moovitapp.com/services-app/services/"
-    private const val APP5 = "https://app5.moovitapp.com/services-app/services/"
+    // Kav's recipe holds these, so a value Moovit changes is fixed without an update.
+    val APP_ID get() = KavRecipe.moovit.apiKey
+    val CLIENT_VERSION get() = KavRecipe.moovit.clientVersion
+    internal val APP4 get() = KavRecipe.moovit.app4
+    private val APP5 get() = KavRecipe.moovit.app5
 
     @Volatile
     var shareLocation = true
 
     // What Moovit is told instead while private search is on: a city's centre or a chosen place.
     @Volatile var standIn: () -> Pair<Double, Double>? = { null }
-    private val NEUTRAL = 32.0755 to 34.7755
+    internal val NEUTRAL = 32.0755 to 34.7755
     @Volatile
     private var metroRev: String = "1788783184120"
 
@@ -42,13 +44,17 @@ object Moovit {
         return true
     }
 
-    private fun post(
+    // Moovit's CDN answers a connection in a few dozen milliseconds. A route that hasn't by now is dead, so the
+    // connection moves on to Moovit's next address instead of holding up the search.
+    private const val CONNECT_MS = 5000
+
+    internal fun post(
         base: String, path: String, body: ByteArray, headers: Map<String, String>, readMs: Int = 25000,
         revision: Boolean = true,
     ): Pair<Int, ByteArray> {
         repeat(2) { attempt ->
             val c = (URL(base + path).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"; doOutput = true; connectTimeout = 20000; readTimeout = readMs
+                requestMethod = "POST"; doOutput = true; connectTimeout = CONNECT_MS; readTimeout = readMs
                 for ((k, v) in if (revision) withRev(headers) else headers) setRequestProperty(k, v)
             }
             c.outputStream.use { it.write(body) }
@@ -75,7 +81,10 @@ object Moovit {
     private fun createUserBody(lat: Double, lon: Double): ByteArray = TWriter().apply {
         structField(1, latlon(lat, lon))
         structField(3, locale())
-        strField(4, "Nothing Galaga"); strField(5, "15_35"); i32Field(6, 2)
+        // The phone's own model and Android version, as Moovit's app sends them. Moovit refused a
+        // fixed value that every copy of Kav sent.
+        strField(4, "${Build.MANUFACTURER} ${Build.PRODUCT}")
+        strField(5, "${Build.VERSION.RELEASE}_${Build.VERSION.SDK_INT}"); i32Field(6, 2)
         structField(7, dpk())
         strField(8, ""); strField(9, ""); boolField(10, true)
         i32Field(11, 5); i64Field(12, System.currentTimeMillis()); i32Field(13, 1)
@@ -83,15 +92,23 @@ object Moovit {
         strField(16, APP_ID)
         strField(19, UUID.randomUUID().toString())
         strField(20, UUID.randomUUID().toString().replace("-", ""))
-        strField(21, "com.tranzmate")
+        strField(21, KavRecipe.moovit.storeAppId)
+        // useNewBrazeWorkspace: Moovit's app sets it, and the payment SMS codes of a user made without it are refused.
+        boolField(22, true)
         stop()
     }.bytes()
 
-    private val userHeaders = mapOf(
-        "Content-Type" to "application/octet", "Accept" to "application/json",
-        "Accept-Encoding" to "gzip", "User-Agent" to "Dalvik/2.1.0",
+    // Exactly what Moovit's own app sends when it creates or renews a user; Moovit refuses values only Kav sends.
+    private val userHeaders get() = recipe(mapOf(
+        "Content-Type" to "application/octet", "Accept" to "application/octet,application/json,application/json",
+        "Accept-Encoding" to "gzip;q=1.0,identity;q=0.5", "User-Agent" to "ktor-client",
         "api_key" to APP_ID, "client_version" to CLIENT_VERSION, "phone_type" to "2",
-    )
+    ), KavRecipe.moovit.userHeaders)
+
+    // Kav's recipe can replace a header Moovit starts refusing, or leave it out (null).
+    private fun recipe(headers: Map<String, String>, changes: Map<String, String?>): Map<String, String> =
+        if (changes.isEmpty()) headers
+        else headers.filterKeys { it !in changes } + changes.mapNotNull { (k, v) -> v?.let { k to it } }
 
     private fun sessionOf(userKey: String, metroId: Int, tokens: JSONObject): MoovitSession {
         val access = tokens.getJSONObject("1").getJSONObject("rec")
@@ -107,8 +124,7 @@ object Moovit {
 
     fun register(lat: Double = NEUTRAL.first, lon: Double = NEUTRAL.second): MoovitSession {
         val (la, lo) = if (shareLocation) lat to lon else standIn() ?: NEUTRAL
-        // Moovit's CDN refuses a new user asked for with a revision, or by "ktor-client"; the answer
-        // names the current revision.
+        // Moovit's CDN refuses a new user asked for with a revision; the answer names the current one.
         val (code, raw) = post(APP4, "UserAuth/CreateUser", createUserBody(la, lo), userHeaders, revision = false)
         if (code != 200) throw RuntimeException("CreateUser HTTP $code")
         val rec = JSONObject(String(raw, Charsets.UTF_8)).getJSONObject("1").getJSONObject("rec")
@@ -127,14 +143,34 @@ object Moovit {
         return sessionOf(s.userKey, s.metroId, JSONObject(String(raw, Charsets.UTF_8)).getJSONObject("1").getJSONObject("rec"))
     }
 
-    private fun authHeaders(s: MoovitSession) = mapOf(
+    private val sequence = java.util.concurrent.atomic.AtomicInteger()
+    private val agent = System.getProperty("http.agent")?.takeIf { it.isNotBlank() } ?: "Dalvik/2.1.0"
+
+    // Moovit's app takes its remote settings from here, the context its payment sign-in uses among them. Read once a
+    // run; null when Moovit can't be reached, and the caller keeps its own value.
+    @Volatile private var settings: Map<String, String>? = null
+
+    fun setting(name: String): String? {
+        val known = settings ?: runCatching {
+            val (code, raw) = get(APP4CDN, "V4/GetConfiguration?metroId=1&apiKey=$APP_ID&clientVersion=$CLIENT_VERSION&ostype=2",
+                mapOf("Accept" to "application/octet", "User-Agent" to agent, "api_key" to APP_ID,
+                    "client_version" to CLIENT_VERSION, "phone_type" to "2"))
+            if (code != 200) return null
+            (TReader(raw).readStruct()[1] as? Map<*, *>).orEmpty().entries
+                .mapNotNull { (k, v) -> if (k is String && v is String) k to v else null }.toMap()
+        }.getOrNull()?.also { settings = it } ?: return null
+        return known[name]
+    }
+
+    // As the app's other requests carry them: the phone's own Dalvik agent and a count that goes up.
+    internal fun authHeaders(s: MoovitSession) = recipe(mapOf(
         "Content-Type" to "application/octet", "Accept" to "application/octet",
-        "Accept-Encoding" to "gzip", "User-Agent" to "Dalvik/2.1.0",
+        "Accept-Encoding" to "gzip;q=1.0, identity;q=0.5", "User-Agent" to agent,
         "api_key" to APP_ID, "client_version" to CLIENT_VERSION, "phone_type" to "2",
-        "request-sequence-id" to "1",
+        "request-sequence-id" to sequence.incrementAndGet().toString(), "gtfs-language" to "",
         "user_key" to s.userKey, "access-token" to s.accessToken,
         "Metro-Revision-Metro-Id" to s.metroId.toString(), REV_HEADER to metroRev,
-    )
+    ), KavRecipe.moovit.headers)
 
     data class ArrivalKey(val stopId: Int, val tripId: Long)
 
@@ -299,13 +335,13 @@ object Moovit {
     internal fun arrivalsConf() = TWriter()
         .boolField(2, false).boolField(3, false).boolField(4, true).boolField(5, true).boolField(6, false)
 
-    private const val APP4CDN = "https://app4cdn.moovitapp.com/services-app/services/"
+    private val APP4CDN get() = KavRecipe.moovit.app4cdn
 
     private fun get(base: String, path: String, headers: Map<String, String>): Pair<Int, ByteArray> {
         repeat(2) { attempt ->
             val url = path.replace(Regex("(metro_revision|metroRevisionNumber)=\\d+"), "$1=$metroRev")
             val c = (URL(base + url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"; connectTimeout = 20000; readTimeout = 25000
+                requestMethod = "GET"; connectTimeout = CONNECT_MS; readTimeout = 25000
                 for ((k, v) in withRev(headers)) setRequestProperty(k, v)
             }
             val code = c.responseCode
@@ -463,7 +499,7 @@ object Moovit {
         val routeType: Int,
     )
 
-    private const val STATIC = "https://static.moovitapp.com/v4/"
+    private val STATIC get() = KavRecipe.moovit.static
 
     // Every line Moovit knows, from the file its own app searches. The name follows the
     // metro revision, so loading the agencies first brings the revision up to date.
@@ -566,7 +602,17 @@ object Moovit {
                 type = (jInt(item, "1") ?: 5L).toInt(),
             ))
         }
-        return out.take(5)
+        // Moovit ranks by text alone, so the same street in the user's own town can lose to Tel Aviv's.
+        // Only names holding every typed word move up: Moovit also returns stray near hits, like Shenkar's library
+        // for "מכללת ספיר". House numbers are left out, Moovit's street names don't carry them.
+        val words = searchWords(query).filter { w -> !w.all { it.isDigit() } }
+        val near = where?.let { (la, lo) ->
+            out.filter { p ->
+                uk.noammm.kav.ui.metres(la, lo, p.lat, p.lon) < 15_000 &&
+                    searchWords(p.name).let { name -> words.isNotEmpty() && words.all { w -> name.any { it.startsWith(w) } } }
+            }
+        }.orEmpty()
+        return (near + (out - near.toSet())).take(5)
     }
 
     // The timetable keys stops by GTFS code, so Moovit's own id comes from a search.
@@ -700,6 +746,7 @@ object Moovit {
         val tags: List<String> = emptyList(),
         val section: String = "",
         val sectionId: Int = -1,
+        val wire: String? = null,
     ) {
         val durationMin get() = ((arr - dep) / 60).toInt()
         val rides get() = legs.filter { it.kind == LegKind.RIDE }
@@ -924,6 +971,7 @@ object Moovit {
             tags = tags,
             section = jStr(it, "14").orEmpty(),
             sectionId = (jInt(it, "2") ?: -1L).toInt(),
+            wire = it.toString(),
         )
     }
 
@@ -941,11 +989,24 @@ object Moovit {
     ) {
         private val byId = sections.associateBy { it.id }
 
+        // NO_GROUPING sections hold a station-to-station timetable, not a way there: Moovit's app shows them as a
+        // "View schedules" card, never among the routes.
+        private fun isSchedule(it: Itinerary) = byId[it.sectionId]?.type == SECTION_NO_GROUPING
+
+        fun schedule(): Itinerary? = itineraries.firstOrNull(::isSchedule)
+
+        // Moovit leads with a Gett card. Kav files it with Moovit's own taxi section instead, near the end.
+        fun isTaxiCard(it: Itinerary) =
+            it.legs.any { l -> l.kind == LegKind.TAXI } && it.legs.none { l -> l.kind == LegKind.RIDE }
+
+        private fun sectionOf(it: Itinerary): Int = if (isTaxiCard(it)) SECTION_TAXI else it.sectionId
+
         fun laidOut(): List<Itinerary> {
+            val itineraries = itineraries.filterNot(::isSchedule)
             if (sections.isEmpty()) return itineraries
             val seen = HashMap<Int, Int>()
             return itineraries
-                .sortedBy { byId[it.sectionId]?.index ?: Int.MAX_VALUE }
+                .sortedBy { byId[sectionOf(it)]?.index ?: Int.MAX_VALUE }
                 .filter {
                     val cap = byId[it.sectionId]?.maxItems ?: Int.MAX_VALUE
                     val n = (seen[it.sectionId] ?: 0) + 1
@@ -954,9 +1015,12 @@ object Moovit {
                 }
         }
 
-        fun heading(it: Itinerary): String = byId[it.sectionId]?.name.orEmpty()
+        fun heading(it: Itinerary): String = byId[sectionOf(it)]?.name.orEmpty()
     }
 
+    const val SECTION_NO_GROUPING = 15
+    // Moovit's "Taxi & Ride Hailing" section, the same id in every plan since September 2026.
+    const val SECTION_TAXI = 1581
     const val TIME_ARRIVAL = 1
     const val TIME_DEPARTURE = 2
     const val TIME_LAST = 3
@@ -980,8 +1044,10 @@ object Moovit {
         timeType: Int = TIME_DEPARTURE,
         routeTypes: List<Int> = ALL_ROUTE_TYPES,
         skipTaxi: Boolean = false,
+        stopovers: List<Place> = emptyList(),
+        toName: String? = null,
     ): Plan {
-        val body = tripPlanRequest(from, to, whenMs, timeType, routeTypes, skipTaxi)
+        val body = tripPlanRequest(from, to, whenMs, timeType, routeTypes, skipTaxi, stopovers, toName)
         val h = authHeaders(s) + mapOf("Accept" to "application/json")
         val (code, raw) = post(APP5, "V4/TripPlanner2/Search", body, h)
         if (code == 424) throw refusal(raw)
@@ -1013,6 +1079,38 @@ object Moovit {
             }
         }
         return Plan(out, sections)
+    }
+
+    fun shareItinerary(s: MoovitSession, trip: Itinerary): String {
+        val wire = trip.wire ?: throw IllegalStateException("This saved trip needs to be refreshed before sharing.")
+        val body = TWriter().i32Field(1, 1).strField(2, trip.guid)
+            .structField(3, thriftFields(JSONObject(wire))).stop().bytes()
+        val (code, raw) = post(APP5, "V5/Sharing/ShareItinerary", body,
+            authHeaders(s) + ("Accept" to "application/json"))
+        if (code != 200) throw RuntimeException("Share itinerary HTTP $code")
+        val link = jRec(JSONObject(String(raw, Charsets.UTF_8)), "1")?.let { jStr(it, "1") }
+            ?: throw IllegalStateException("Moovit returned no itinerary link.")
+        require(MoovitLink.parse(link)?.sharedId != null) { "Moovit returned an unsupported itinerary link." }
+        return link
+    }
+
+    class SharedTrip(val trip: Itinerary, val from: Place?, val to: Place?)
+
+    fun sharedItinerary(s: MoovitSession, id: String): SharedTrip {
+        val body = TWriter().strField(1, id).stop().bytes()
+        val (code, raw) = post(APP5, "V4/TripPlanner2/GetSharedItinerary", body,
+            authHeaders(s) + ("Accept" to "application/json"))
+        if (code != 200) throw RuntimeException("Shared itinerary HTTP $code")
+        val root = JSONObject(String(raw, Charsets.UTF_8))
+        val trip = jRec(root, "1")?.let(::parseItinerary)
+            ?: throw IllegalStateException("This shared trip is no longer available.")
+        val request = jRec(root, "2")
+        fun endpoint(field: String): Place? {
+            val location = request?.let { jRec(it, field) }?.let { jRec(it, "1") } ?: return null
+            val point = locationPoint(location) ?: return null
+            return Place(jStr(location, "1").orEmpty(), "", point.first, point.second)
+        }
+        return SharedTrip(trip, endpoint("6"), endpoint("7"))
     }
 
     private fun refusal(raw: ByteArray): PlannerRefusal {
@@ -1085,8 +1183,14 @@ object Moovit {
         val lines = LinkedHashMap<Int, LineInfo>()
         val stops = LinkedHashMap<Int, StopInfo>()
         val types = LinkedHashMap<Int, Int>()
+        val boarding = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
+            .flatMap { it.options }.map { it.fromStop }.filter { it > 0 }.distinct().take(40)
         val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
-        try {
+        // The live layer doesn't need the line and stop details, so both load at once.
+        val liveJob = pool.submit<Pair<Map<ArrivalKey, Arrival>, Int>> {
+            try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
+        }
+        val (live, poll) = try {
             val lineJobs = lineIds.map { id -> id to pool.submit<LineInfo?> { lineInfo(s, id) } }
             val stopJobs = stopIds.map { id -> id to pool.submit<StopInfo?> { stopInfo(s, id) } }
             for ((id, f) in lineJobs) runCatching { f.get() }.getOrNull()?.let { lines[id] = it }
@@ -1094,15 +1198,22 @@ object Moovit {
             val agencies = lines.values.map { it.agencyId }.distinct()
             val typeJobs = agencies.map { a -> a to pool.submit<Int> { agencyRouteType(s, a) } }
             for ((a, f) in typeJobs) types[a] = runCatching { f.get() }.getOrNull() ?: 3
+            liveJob.get()
         } finally {
             pool.shutdown()
         }
-
-        val boarding = list.flatMap { i -> i.legs.filter { it.kind == LegKind.WAIT || it.kind == LegKind.RIDE } }
-            .flatMap { it.options }.map { it.fromStop }.filter { it > 0 }.distinct().take(40)
-        val (live, poll) = try { stopArrivals(s, boarding) } catch (e: Exception) { emptyMap<ArrivalKey, Arrival>() to 20 }
-        return Resolved(lines, stops, types, live, shapesFor(s, list, live), poll, patternsFor(s, list, live))
+        // Shapes and stop patterns both follow from the live layer, not from each other.
+        val patternJob = java.util.concurrent.Executors.newSingleThreadExecutor().let { e ->
+            e.submit<Map<Int, List<Int>>> { patternsFor(s, list, live) }.also { e.shutdown() }
+        }
+        val shapes = shapesFor(s, list, live)
+        val patterns = runCatching { patternJob.get() }.getOrDefault(emptyMap())
+        return Resolved(lines, stops, types, live, shapes, poll, patterns)
     }
+
+    // Shapes and stop patterns only refine a found route. One slow fetch must not hold the results back: whatever
+    // misses this budget keeps loading into its cache and arrives with the next live refresh.
+    private const val EXTRAS_MS = 1500L
 
     internal fun trackedShapeIds(list: List<Itinerary>, live: Map<ArrivalKey, Arrival>): List<Int> =
         list.asSequence().flatMap { it.rides.asSequence() }.flatMap { it.options.asSequence() }
@@ -1125,8 +1236,10 @@ object Moovit {
         val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, missing.size))
         try {
             val jobs = missing.map { id -> id to pool.submit<List<Pair<Double, Double>>> { tripShape(s, id) } }
+            val until = System.currentTimeMillis() + EXTRAS_MS
             for ((id, job) in jobs) {
-                runCatching { job.get() }.getOrNull()?.takeIf { it.size >= 2 }?.let { out[id] = it }
+                runCatching { job.get(until - System.currentTimeMillis(), java.util.concurrent.TimeUnit.MILLISECONDS) }
+                    .getOrNull()?.takeIf { it.size >= 2 }?.let { out[id] = it }
             }
         } finally {
             pool.shutdown()
@@ -1153,8 +1266,9 @@ object Moovit {
         val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, missing.size))
         try {
             val jobs = missing.map { id -> id to pool.submit<List<Int>> { tripPattern(s, id) } }
-            for ((id, job) in jobs) runCatching { job.get() }.getOrNull()
-                ?.takeIf { it.isNotEmpty() }?.let { out[id] = it }
+            val until = System.currentTimeMillis() + EXTRAS_MS
+            for ((id, job) in jobs) runCatching { job.get(until - System.currentTimeMillis(), java.util.concurrent.TimeUnit.MILLISECONDS) }
+                .getOrNull()?.takeIf { it.isNotEmpty() }?.let { out[id] = it }
         } finally {
             pool.shutdown()
         }
@@ -1216,6 +1330,8 @@ object Moovit {
         timeType: Int = TIME_DEPARTURE,
         routeTypes: List<Int> = ALL_ROUTE_TYPES,
         skipTaxi: Boolean = false,
+        stopovers: List<Place> = emptyList(),
+        toName: String? = null,
     ): ByteArray {
         fun locTarget(lat: Double, lon: Double, caption: String?, locType: Int, source: Int): TWriter {
             val inner = TWriter()
@@ -1230,13 +1346,20 @@ object Moovit {
             boolField(4, whenMs <= 0L && timeType == TIME_DEPARTURE)
             i32ListField(5, routeTypes.ifEmpty { ALL_ROUTE_TYPES })
             structField(6, locTarget(from.first, from.second, null, 9, 5))
-            structField(7, locTarget(to.first, to.second, "Destination", 1, 4))
+            structField(7, locTarget(to.first, to.second, toName?.takeIf { it.isNotBlank() } ?: "Destination", 1, 4))
             boolField(10, skipTaxi)
             i32ListField(13, listOf(5, 1, 2, 4))
             boolField(15, true)
-            structField(16, TWriter().boolField(1, false).boolField(3, false))
+            structField(16, TWriter().boolField(1, false).boolField(2, false).boolField(3, false))
             i32Field(17, 1)
             strField(18, "suggested_routes")
+            if (stopovers.isNotEmpty()) {
+                // Stops the rider added on the way: EXPLICIT locations, which Moovit routes through in order.
+                structField(19, TWriter().listField(1, TType.STRUCT, stopovers) { writer, p ->
+                    writer.structField(2, TWriter().structField(1,
+                        TWriter().strField(1, p.name).structField(3, latlon(p.lat, p.lon)).i32Field(4, 1)).i32Field(2, 1)).stop()
+                })
+            }
             stop()
         }.bytes()
     }

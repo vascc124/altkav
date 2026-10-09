@@ -19,6 +19,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import uk.noammm.kav.data.JourneyFile
 import uk.noammm.kav.ui.Fix
+import uk.noammm.kav.ui.Payer
 import uk.noammm.kav.ui.T
 import uk.noammm.kav.ui.buildSteps
 import uk.noammm.kav.ui.journeyProgress
@@ -37,6 +38,7 @@ class TripService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
+            alertIfDue()
             advance()
             post()
             handler.postDelayed(this, TICK_MS)
@@ -59,12 +61,15 @@ class TripService : Service() {
         super.onCreate()
         T.lang = Prefs.lang(this)
         uk.noammm.kav.data.NaimLive.app = applicationContext
+        uk.noammm.kav.ui.Shown.twelveHour = Prefs.twelveHour(this)
         ensureChannel(this)
+        Payer.init(this)
         running = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACT_END) { end(); return START_NOT_STICKY }
+        if (intent?.action == ACT_PAY) pay()
         if (intent?.action == ACT_REPOST) shown = null
         if (!foreground && !goForeground()) { stopSelf(); return START_NOT_STICKY }
         if (journey() == null) { finish(); return START_NOT_STICKY }
@@ -117,6 +122,9 @@ class TripService : Service() {
     private fun onFix(location: Location) {
         val f = Fix(location.latitude, location.longitude, location.fixTime(), location.speed)
         fix = f
+        // The watch timer stops while the screen sleeps, and the fix can carry the trip past the last stop's
+        // window before it runs again: every fix checks first, so "get off" isn't skipped.
+        alertIfDue()
         val shell = TripBridge.fix
         if (shell != null) shell(f) else advance()
         post()
@@ -168,7 +176,28 @@ class TripService : Service() {
 
     private fun notice(): TripNotice? {
         val (journey, step) = journey() ?: return null
-        return tripNotice(journey, step, fix, System.currentTimeMillis() / 1000, Prefs.accent(this))
+        val latest = listOfNotNull(fix, TripBridge.fixNow?.invoke()).maxByOrNull { it.at }
+        return tripNotice(journey, step, latest, System.currentTimeMillis() / 1000, Prefs.accent(this))?.copy(pay = when {
+            Payer.payingLater -> T("Paying…", "משלמים…")
+            Payer.pending != null -> T("PAY QUICK", "תשלום מהיר!")
+            Payer.paidLater != null -> T("Paid", "שולם")
+            else -> null
+        })
+    }
+
+    // "PAY QUICK": the bus ride kept with Asshole mode is bought. A failure comes as an alert with Moovit's reason; "Paid"
+    // stays on the button for a few seconds, as on the app's square.
+    private fun pay() {
+        Payer.payLater({ key, leg, journey -> notePaid(this, key, leg, journey) }) {
+            val paid = Payer.paidLater
+            if (Payer.pending != null) Payer.laterError?.let { alert(this, T("Not paid", "לא שולם"), it) }
+            post(force = true)
+            if (paid != null) handler.postDelayed({
+                if (Payer.paidLater == paid) Payer.paidLater = null
+                post(force = true)
+            }, PAID_MS)
+        }
+        post(force = true)
     }
 
     private fun post(force: Boolean = false) {
@@ -204,6 +233,8 @@ class TripService : Service() {
         private const val CHANNEL = "navigation"
         private const val ACT_END = "uk.noammm.kav.trip.END"
         private const val ACT_REPOST = "uk.noammm.kav.trip.REPOST"
+        private const val ACT_PAY = "uk.noammm.kav.trip.PAY"
+        private const val PAID_MS = 5_000L
         private const val PROMOTED = "android.requestPromotedOngoing"
         private const val TICK_MS = 15_000L
         private const val MIN_GAP_MS = 2_000L
@@ -215,6 +246,21 @@ class TripService : Service() {
             running?.let { it.track(); it.post(); return }
             if (!NotificationManagerCompat.from(ctx).areNotificationsEnabled()) return
             runCatching { ctx.startForegroundService(Intent(ctx, TripService::class.java)) }
+        }
+
+        fun repost() { running?.post() }
+
+        // A ride paid from the notification or the app's square goes on its trip leg's card: in the app's trip when it
+        // is open, else in the saved one.
+        fun notePaid(ctx: Context, key: String, leg: Int?, trip: String?) {
+            if (leg == null || trip == null) return
+            TripBridge.journey?.let { current ->
+                if (current()?.first?.paymentKey == trip) TripBridge.paid?.invoke(leg, key)
+                return
+            }
+            val (journey, step) = JourneyFile.load(ctx) ?: return
+            if (journey.paymentKey != trip) return
+            JourneyFile.save(ctx, journey.copy(paid = journey.paid + (leg to key)), step)
         }
 
         fun stop(ctx: Context) {
@@ -233,6 +279,7 @@ class TripService : Service() {
                 .setContentIntent(openApp(ctx))
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build()
             runCatching { NotificationManagerCompat.from(ctx).notify(ALERT_ID, n) }
         }
@@ -281,6 +328,7 @@ class TripService : Service() {
                 .setLargeIcon(Icon.createWithBitmap(plateIcon(n.glyph, n.tint)))
                 .setStyle(style)
                 .setShortCriticalText(n.chip)
+                .apply { n.pay?.let { addAction(Notification.Action.Builder(null as Icon?, it, act(ctx, ACT_PAY)).build()) } }
                 .addAction(Notification.Action.Builder(null as Icon?, T("End trip", "סיום נסיעה"), act(ctx, ACT_END)).build())
                 .setContentIntent(openApp(ctx))
                 .setDeleteIntent(act(ctx, ACT_REPOST))
@@ -289,6 +337,8 @@ class TripService : Service() {
                 .setShowWhen(false)
                 .setColor(accent)
                 .setCategory(Notification.CATEGORY_NAVIGATION)
+                // The next step at a glance on the lock screen, without unlocking.
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
                 .addExtras(Bundle().apply { putBoolean(PROMOTED, true) })
                 .build()
@@ -302,6 +352,7 @@ class TripService : Service() {
                 .setSubText(n.arrive)
                 .setLargeIcon(plateIcon(n.glyph, n.tint))
                 .setProgress(n.max, n.progress, false)
+                .apply { n.pay?.let { addAction(0, it, act(ctx, ACT_PAY)) } }
                 .addAction(0, T("End trip", "סיום נסיעה"), act(ctx, ACT_END))
                 .setContentIntent(openApp(ctx))
                 .setDeleteIntent(act(ctx, ACT_REPOST))
@@ -310,6 +361,7 @@ class TripService : Service() {
                 .setShowWhen(false)
                 .setColor(accent)
                 .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .build()
     }
@@ -320,4 +372,5 @@ object TripBridge {
     @Volatile var journey: (() -> Pair<ActiveJourney, Int>?)? = null
     @Volatile var fix: ((Fix) -> Unit)? = null
     @Volatile var fixNow: (() -> Fix?)? = null
+    @Volatile var paid: ((leg: Int, key: String) -> Unit)? = null
 }

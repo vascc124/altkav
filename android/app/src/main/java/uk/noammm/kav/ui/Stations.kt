@@ -24,6 +24,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import uk.noammm.kav.data.Moovit
 import uk.noammm.kav.KavModel
 import uk.noammm.kav.LOCATION_PERMISSIONS
 import uk.noammm.kav.data.Curlbus
@@ -165,15 +166,16 @@ private fun StationList(model: KavModel, net: Net, list: StationListState) {
 @Composable
 private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> Unit) {
     var t0 by remember(stop) { mutableIntStateOf(nowSec()) }
-    // Kav+: live arrivals for this stop from the Ministry's feed via curlbus; null when there are none.
-    var live by remember(stop) { mutableStateOf<List<Curlbus.BoardArrival>?>(null) }
+    // AltKav+: live arrivals for this stop from the Ministry's feed via curlbus (and Na'im BaSofash's own
+    // feed, merged in by NaimLive); null when there are none. Used for runs Moovit has no live time for.
+    var bus by remember(stop) { mutableStateOf<List<Curlbus.BoardArrival>?>(null) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(stop, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 t0 = nowSec()
                 val code = net.code.getOrElse(stop) { 0 }
-                live = withContext(Dispatchers.IO) { runCatching { Curlbus.boardArrivals(code) }.getOrNull() }
+                bus = withContext(Dispatchers.IO) { runCatching { Curlbus.boardArrivals(code) }.getOrNull() }
                 t0 = nowSec()
                 delay(30_000)
             }
@@ -185,14 +187,39 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
         if (moovitId <= 0) moovitId = StopPhotos.idOf(net, stop) ?: -1
         looked = true
     }
-    // Each live bus takes the scheduled run of its line to the same last stop closest to its ETA, from 3 min
-    // early to 40 min late. Runs already due stay listed only while a live bus still holds them.
-    val rows = remember(stop, t0, live) {
+    // Moovit's live arrivals at this stop: line number, scheduled and live seconds of the day, and the departure that
+    // colours and marks it like the search results. Refreshed with t0.
+    class LiveAt(val number: String, val static: Int, val rt: Int, val dep: Moovit.Departure)
+    var live by remember(stop) { mutableStateOf<List<LiveAt>>(emptyList()) }
+    LaunchedEffect(moovitId, t0) {
+        if (moovitId <= 0) return@LaunchedEffect
+        live = runCatching {
+            withContext(Dispatchers.IO) {
+                val s = Online.open(net.lat[stop] to net.lon[stop])
+                val day = java.util.Calendar.getInstance(ISRAEL).apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+                }.timeInMillis / 1000
+                Moovit.stopArrivals(s, listOf(moovitId)).first.values.filter { it.rtUtc > 0 }.mapNotNull { a ->
+                    val number = Moovit.lineInfo(s, a.lineId)?.number ?: return@mapNotNull null
+                    LiveAt(number, (a.staticUtc - day).toInt(), (a.rtUtc - day).toInt(), a.departure())
+                }
+            }
+        }.getOrDefault(live)
+    }
+    fun liveAt(route: Int, dep: Int): LiveAt? = live.firstOrNull {
+        it.number == net.rShort[route] && kotlin.math.abs(it.static - dep) <= 120
+    }
+    fun liveFor(route: Int, dep: Int): Int? = liveAt(route, dep)?.rt
+    // Each curlbus bus takes the scheduled run of its line to the same last stop closest to its ETA, from 3 min
+    // early to 40 min late. Runs already due stay listed only while a live time (Moovit's or curlbus's) still
+    // holds them.
+    val rows = remember(stop, t0, bus, live) {
         val today = java.util.Calendar.getInstance(ISRAEL).get(java.util.Calendar.DAY_OF_WEEK) - 1
         val all = net.departuresAt(stop, t0 - 1800, today, limit = 90)
         val nowUtc = System.currentTimeMillis() / 1000
         val etaOf = HashMap<Int, Int>()
-        for (a in live.orEmpty().sortedBy { it.etaUtc }) {
+        for (a in bus.orEmpty().sortedBy { it.etaUtc }) {
             val eta = (t0 + (a.etaUtc - nowUtc)).toInt()
             var best = -1
             var bestGap = Int.MAX_VALUE
@@ -207,9 +234,10 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
             if (best >= 0) etaOf[best] = eta
         }
         all.withIndex().mapNotNull { (i, row) ->
-            val eta = etaOf[i]
-            if (eta == null && row.second < t0) null else Triple(row.first, row.second, eta)
-        }.sortedBy { it.third ?: it.second }.take(60)
+            val rt = liveFor(net.tripRoute[net.tripOf(net.cST[row.first])], row.second)
+            val eta = if (rt == null) etaOf[i] else null
+            if (rt == null && eta == null && row.second < t0) null else Triple(row.first, row.second, eta)
+        }.sortedBy { (c, dep, eta) -> liveFor(net.tripRoute[net.tripOf(net.cST[c])], dep) ?: eta ?: dep }.take(60)
     }
 
     Column(Modifier.fillMaxSize().background(K.bg)) {
@@ -219,17 +247,20 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                 StopGlyphOrPhoto(moovitId, null, thumb = 56.dp, resolving = !looked)
                 Spacer(Modifier.width(K.gap3))
                 Column(Modifier.weight(1f)) {
-                    Text(net.name[stop], fontSize = 14.sp, color = K.text)
+                    Text(net.name[stop], fontSize = 18.sp, lineHeight = 24.sp, color = K.text)
                     val city = net.cityOf(stop)
                     val code = net.code.getOrElse(stop) { 0 }
                     Text(
                         listOf(
                             city.takeIf { it.isNotBlank() },
                             code.takeIf { it > 0 }?.let { T("stop $it", "תחנה $it") },
-                            if (rows.any { it.third != null }) T("live times from the Ministry via curlbus", "זמנים בזמן אמת ממשרד התחבורה דרך curlbus")
-                            else T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת"),
+                            when {
+                                live.isNotEmpty() -> T("coloured times are live", "זמנים צבועים הם בזמן אמת")
+                                rows.any { it.third != null } -> T("live times from the Ministry via curlbus", "זמנים בזמן אמת ממשרד התחבורה דרך curlbus")
+                                else -> T("scheduled times, no live feed available", "לוחות זמנים מתוכננים, אין זמינות בזמן אמת")
+                            },
                         ).filterNotNull().joinToString(" · "),
-                        fontSize = 11.sp, color = K.dim,
+                        fontSize = 13.sp, lineHeight = 18.sp, color = K.dim,
                     )
                 }
             }
@@ -262,22 +293,29 @@ private fun DepartureBoard(model: KavModel, net: Net, stop: Int, onBack: () -> U
                             model.pendingTo = placeOf(net, last)
                             model.tab = uk.noammm.kav.Tab.Directions
                         }
-                        .padding(horizontal = K.gap3, vertical = 10.dp),
+                        .padding(horizontal = K.gap3, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(K.gap3),
                 ) {
                     LineBadge(net, net.tripRoute[t])
                     Text(
-                        net.name[last], fontSize = 13.sp, color = K.muted,
+                        net.name[last], fontSize = 16.sp, color = K.text,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                     )
-                    if (eta != null) {
-                        Text(if (eta - t0 < 60) T("now", "עכשיו") else relative(eta, t0) ?: hhmm(eta), style = Mono, color = K.live)
-                    } else Text(
-                        relative(dep, t0)
-                            ?: if (dep >= 86_400 && dep - 86_400 >= t0) T("tomorrow ${hhmm(dep)}", "מחר ${hhmm(dep)}") else hhmm(dep),
-                        style = Mono, color = K.scheduled,
-                    )
+                    val at = liveAt(net.tripRoute[t], dep)
+                    if (at == null && eta != null) {
+                        Text(if (eta - t0 < 60) T("now", "עכשיו") else relative(eta, t0) ?: hhmm(eta), style = Mono, fontSize = 15.sp, color = K.live)
+                    } else {
+                        val shown = at?.rt ?: dep
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (at != null) { DepMarkGlyph(at.dep, 12.dp); Spacer(Modifier.width(4.dp)) }
+                            Text(
+                                relative(shown, t0)
+                                    ?: if (shown >= 86_400 && shown - 86_400 >= t0) T("tomorrow ${hhmm(shown)}", "מחר ${hhmm(shown)}") else hhmm(shown),
+                                style = Mono, fontSize = 15.sp, color = if (at != null) depColour(at.dep) else K.scheduled,
+                            )
+                        }
+                    }
                 }
             }
         }

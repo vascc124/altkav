@@ -6,7 +6,6 @@ import android.net.Uri
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
-import uk.noammm.kav.data.MoovitLink
 import uk.noammm.kav.ui.Favourite
 import uk.noammm.kav.ui.T
 
@@ -19,7 +18,7 @@ object Shortcuts {
         val list = favourites.filter { it.place != null }.take(max).mapIndexed { rank, f ->
             val p = f.place!!
             val label = if (f.id == Favourite.HOME && f.name == "Home") T("Home", "בית") else f.name
-            val link = MoovitLink.share(null, null, null, label, p.lat, p.lon)
+            val link = directionsLink(label, p.lat, p.lon)
             ShortcutInfoCompat.Builder(app, "fav-${f.id}")
                 .setShortLabel(label)
                 .setLongLabel(T("Directions to $label", "מסלול אל $label"))
@@ -36,4 +35,11 @@ object Shortcuts {
         "work", "business", "school" -> R.drawable.ic_shortcut_work
         else -> R.drawable.ic_shortcut_place
     }
+
+    // A Moovit directions link to one place, which MoovitLink.parse opens as a plan. Upstream Kav 2.4 dropped
+    // MoovitLink.share, which built the same link.
+    private fun directionsLink(name: String, lat: Double, lon: Double): String =
+        "https://moovitapp.com/directions?dest_lat=" + String.format(java.util.Locale.US, "%.6f", lat) +
+            "&dest_lon=" + String.format(java.util.Locale.US, "%.6f", lon) +
+            "&dest_name=" + java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")
 }

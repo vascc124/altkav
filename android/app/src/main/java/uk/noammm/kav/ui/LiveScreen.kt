@@ -55,9 +55,7 @@ import uk.noammm.kav.data.nearestStops
 import uk.noammm.kav.hasLocationPermission
 import uk.noammm.kav.loadNet
 import uk.noammm.kav.requestLocationOnce
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.coroutines.coroutineContext
 
@@ -159,7 +157,7 @@ object Online {
     }
 }
 
-private val hm = SimpleDateFormat("HH:mm", Locale.US).apply { timeZone = ISRAEL }
+private val hm get() = clockFormat()
 
 private const val LOOK_REACH_KM = 3.5
 
@@ -668,7 +666,7 @@ private fun LiveMap(
         geometry = geometry,
         onLook = onLook,
         moved = !following,
-        live = vehicleGeometry(shown.map { it.arrival to modeOf(it.routeType) }) { a ->
+        live = vehicleGeometry(shown.map { it.arrival to modeOf(it.routeType) }, LocalDensity.current) { a ->
             if (a.tripId == (chosen ?: look?.tripId)) 1f else 1f - step
         },
         onTap = { at, proj ->
@@ -736,7 +734,7 @@ private fun LinePlate(v: Tracked) {
     }
 }
 
-private fun stopName(stop: Moovit.Stop?, id: Int) = stop?.name?.ifBlank { null } ?: T("stop $id", "תחנה $id")
+private fun stopName(name: String?) = name?.ifBlank { null } ?: "…"
 
 @Composable
 private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onSelect: (Tracked) -> Unit) {
@@ -751,6 +749,7 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
         )
         return
     }
+    val named = rememberStopNames(vehicles.filter { it.stop == null }.map { it.arrival.stopId })
     LazyColumn(modifier, contentPadding = PaddingValues(
         start = K.gap1, top = K.gap1, end = K.gap1, bottom = K.gap1 + LocalBottomBarInset.current,
     )) {
@@ -772,11 +771,11 @@ private fun LiveList(vehicles: List<Tracked>, now: Long, modifier: Modifier, onS
                         fontSize = 14.sp, color = K.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        "${stopName(v.stop, a.stopId)} · ${whenLabel(v.eta, now)}",
+                        "${stopName(v.stop?.name ?: named[a.stopId]?.name)} · ${whenLabel(v.eta, now)}",
                         fontSize = 12.sp, color = K.dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text(T("${ageS}s ago", "לפני ${ageS} שנ׳"), style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.live)
+                Text(T("${ageS}s ago", "לפני ${ageS} שנ׳"), style = Mono, fontSize = 11.sp, color = if (a.vehicleStatus == 2) K.problem else K.realtime)
                 Text(T.onward, fontSize = 22.sp, color = K.dim)
             }
         }
@@ -825,7 +824,7 @@ private fun LiveVehicleCard(v: Tracked?, now: Long, onClose: () -> Unit) {
             a.vehicleStatus == 3 -> T("Not departed yet", "טרם יצא") to K.dim
             !a.hasLocation -> T("No live location right now", "אין מיקום בזמן אמת כרגע") to K.dim
             a.vehicleStatus == 2 -> T("Out of route", "מחוץ למסלול") to K.problem
-            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.live
+            now - a.sampleUtc <= 120 -> T("Location updated recently", "המיקום עודכן לאחרונה") to K.realtime
             else -> T("Location is estimated", "המיקום משוער") to K.problem
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -860,6 +859,7 @@ private fun LiveStopCard(
     onVehicle: (Tracked) -> Unit,
     onClose: () -> Unit,
 ) {
+    val named = rememberStopNames(if (stop == null) listOf(stopId) else emptyList())
     val due = remember(arrivals, stopId) {
         arrivals.values.filter { it.stopId == stopId }
             .sortedBy { a -> a.rtUtc.takeIf { it > 0 } ?: a.staticUtc }
@@ -912,7 +912,7 @@ private fun LiveStopCard(
             StopGlyphOrPhoto(stopId, null, thumb = 44.dp)
             Column(Modifier.weight(1f)) {
                 Text(
-                    stopName(stop, stopId), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
+                    stopName(stop?.name ?: named[stopId]?.name), fontSize = 17.sp, color = K.text, fontWeight = FontWeight.SemiBold,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Text(
@@ -954,7 +954,7 @@ private fun LiveStopCard(
                             PlatformTag(v.arrival.platform)
                         }
                     }
-                    if (live) LiveGlyph(if (v.arrival.vehicleStatus == 2) K.problem else K.live, 11.dp)
+                    if (live) LiveGlyph(if (v.arrival.vehicleStatus == 2) K.problem else K.realtime, 11.dp)
                     Text(
                         whenLabel(v.eta, now), style = Mono, fontSize = 13.sp,
                         color = if (live) K.text else K.scheduled,

@@ -1168,10 +1168,11 @@ fun requestLocationOnce(
     if (!requireFresh) {
         lastKnown(ctx)?.takeIf { System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 }?.let { offer(it, false) }
     } else {
-        // A precise fix from the last two minutes is as good as a new one, and plans without waiting for the GPS,
-        // the way Moovit plans from where the phone already knows you are.
+        // A precise fix from the last half minute is as good as a new one, and plans without waiting for the GPS,
+        // the way Moovit plans from where the phone already knows you are. AltKav+: was two minutes, which on a
+        // bus or a walk is a start point hundreds of metres behind you.
         lastKnown(ctx)?.takeIf {
-            System.currentTimeMillis() / 1000 - it.fixTime() in 0..120 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
+            System.currentTimeMillis() / 1000 - it.fixTime() in 0..30 && it.hasAccuracy() && it.accuracy in 0f..GOOD_FIX_M
         }?.let { onResult(it.latitude to it.longitude); return {} }
     }
 

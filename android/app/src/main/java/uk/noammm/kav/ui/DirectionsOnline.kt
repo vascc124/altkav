@@ -162,6 +162,26 @@ fun DirectionsOnline(model: KavModel) {
     val toLL = toPlace?.let { it.lat to it.lon }
     val fromIsHere = fromPlace == null || isHere(fromPlace)
 
+    // AltKav+: the position a "from here" search started from was kept for as long as this screen lived, so
+    // coming back to it after a ride planned from where the rider had been. Coming back to the screen (resume)
+    // with a position over 2 min old, and no trip open, finds the rider again and plans from there.
+    var hereOriginAt by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(hereOrigin) { if (hereOrigin != null) hereOriginAt = System.currentTimeMillis() }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && fromPlace == null && hereOrigin != null &&
+                open == null && model.activeJourney == null &&
+                System.currentTimeMillis() - hereOriginAt > 120_000L
+            ) {
+                hereOrigin = null
+                saved = null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     var findingHere by remember { mutableStateOf(false) }
     var findHereFailed by remember { mutableStateOf(false) }
     var hereRetry by remember { mutableIntStateOf(0) }

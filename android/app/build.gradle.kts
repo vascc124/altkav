@@ -18,8 +18,8 @@ android {
         // AltKav+ build numbers only rise: "<upstream major.minor>.p<n>" with n counting every AltKav+
         // release, since Updates.isNewer compares digit by digit. 2.4.p16 is based on upstream Kav 2.4.1
         // (versionCode = upstream code × 100 + n).
-        versionCode = 2716
-        versionName = "2.4.p16"
+        versionCode = 2717
+        versionName = "2.4.p17"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Kav+: when the bundled timetable was built, so TimetableUpdate only fetches a newer week.
         val bundled = file("src/main/assets/il.kav").takeIf { it.exists() }?.lastModified() ?: 0L

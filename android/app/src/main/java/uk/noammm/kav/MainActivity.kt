@@ -647,11 +647,16 @@ private fun Shell(model: KavModel) {
                 Moovit.refreshLive(session, listOf(current.trip), current.resolved)
             }
             model.activeJourney?.takeIf { it.trip == journey.trip }?.let {
-                model.activeJourney = it.copy(resolved = Moovit.Resolved(
+                val merged = Moovit.Resolved(
                     refreshed.lines + it.resolved.lines, refreshed.stops + it.resolved.stops,
                     refreshed.routeTypes + it.resolved.routeTypes, refreshed.live,
                     refreshed.shapes + it.resolved.shapes, refreshed.pollSecs, refreshed.patterns,
-                ))
+                )
+                // AltKav+: positions Moovit lacks, from the Ministry's feed (LiveFill).
+                val filled = withContext(Dispatchers.IO) {
+                    runCatching { uk.noammm.kav.data.LiveFill.fill(listOf(it.trip), merged) }.getOrDefault(merged)
+                }
+                model.activeJourney?.takeIf { j -> j.trip == journey.trip }?.let { j -> model.activeJourney = j.copy(resolved = filled) }
             }
         }
     }

@@ -93,6 +93,8 @@ object Curlbus {
     class BoardArrival(
         val line: String, val destCode: Int, val etaUtc: Long, val tracked: Boolean,
         val lat: Double = 0.0, val lon: Double = 0.0, val vehicle: String = "",
+        // When the vehicle last reported its position (Unix s), 0 when unknown.
+        val sampleUtc: Long = 0L,
     )
 
     fun boardArrivals(code: Int): List<BoardArrival>? {
@@ -124,6 +126,7 @@ object Curlbus {
                 lat = v.optJSONObject("location")?.optString("lat")?.toDoubleOrNull() ?: 0.0,
                 lon = v.optJSONObject("location")?.optString("lon")?.toDoubleOrNull() ?: 0.0,
                 vehicle = v.optString("vehicle_ref"),
+                sampleUtc = time(v.optString("timestamp")) ?: 0L,
             )
         }
     }

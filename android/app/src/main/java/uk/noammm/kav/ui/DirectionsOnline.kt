@@ -349,11 +349,15 @@ fun DirectionsOnline(model: KavModel) {
             wait = true
             val s = runCatching { Online.open() }.getOrNull() ?: break
             val refreshed = withContext(Dispatchers.IO) { Moovit.refreshLive(s, otherTrips, resolved) }
-            resolved = Moovit.Resolved(
+            val merged = Moovit.Resolved(
                 refreshed.lines + resolved.lines, refreshed.stops + resolved.stops,
                 refreshed.routeTypes + resolved.routeTypes, refreshed.live,
                 refreshed.shapes + resolved.shapes, refreshed.pollSecs, refreshed.patterns + resolved.patterns,
             )
+            // AltKav+: positions Moovit lacks, from the Ministry's feed (LiveFill).
+            resolved = withContext(Dispatchers.IO) {
+                runCatching { uk.noammm.kav.data.LiveFill.fill(otherTrips, merged) }.getOrDefault(merged)
+            }
         }
     }
 

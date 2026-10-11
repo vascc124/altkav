@@ -165,6 +165,8 @@ fun NavigateScreen(
     onStop: () -> Unit,
     onExit: () -> Unit = onStop,
     onPlan: () -> Unit = onExit,
+    // AltKav+: opens a line's live location (board stop), as from the trip's details.
+    onTrack: ((Moovit.Leg, Int) -> Unit)? = null,
 ) {
     val now by produceState(System.currentTimeMillis() / 1000) {
         while (true) { kotlinx.coroutines.delay(1000); value = System.currentTimeMillis() / 1000 }
@@ -285,6 +287,7 @@ fun NavigateScreen(
                             chosen = chosen, fix = fix,
                             onChoose = ::choose,
                             pay = { leg, ride -> TripPay(model, leg, ride, r) },
+                            onTrack = onTrack,
                         )
                     }
                 }
@@ -387,6 +390,8 @@ internal fun StepCard(
     onChoose: (leg: Int, option: Int) -> Unit = { _, _ -> },
     // The ride's payment, or its ticket once bought, on its riding card.
     pay: (@Composable (legIndex: Int, ride: Moovit.Leg) -> Unit)? = null,
+    // AltKav+: a live-location button for each line to choose from and for the line being ridden.
+    onTrack: ((Moovit.Leg, Int) -> Unit)? = null,
 ) {
     when (step) {
         is Step.Start -> Card(T("Start from", "התחלה מ-"), active) {
@@ -462,6 +467,10 @@ internal fun StepCard(
                         wait?.let {
                             AlertRow(it.alertCategory, it.alertText, r.line(ride.lineId)?.groupId ?: 0)
                         }
+                        onTrack?.let { track ->
+                            Spacer(Modifier.height(K.gap2))
+                            LiveLocationButton(r.arrival(ride)?.hasLocation == true) { track(ride, ride.fromStop) }
+                        }
                     }
                 }
             }
@@ -481,6 +490,10 @@ internal fun StepCard(
                 StopLine(alight?.name ?: T("your stop", "התחנה שלכם"), alight?.code, legMode(ride, r), stopId = ride.toStop)
                 Spacer(Modifier.height(K.gap2))
                 LineRow(ride, r)
+                onTrack?.let { track ->
+                    Spacer(Modifier.height(K.gap2))
+                    LiveLocationButton(arrival?.hasLocation == true) { track(ride, ride.fromStop) }
+                }
                 // Above the stops, so a long ride's payment is in sight without scrolling.
                 pay?.invoke(step.legIndex, ride)
                 if (stops.size > 1) {

@@ -117,6 +117,7 @@ fun TripDetailScreen(
                 onStop = { navigating = false; onEnd() },
                 onExit = onHome,
                 onPlan = { navigating = false; planFromNavigation = true },
+                onTrack = { leg, stopId -> tracking = leg to stopId },
             )
             else -> TripDetailBody(trip, r, fromLabel, toLabel, onBack = ::leavePlan,
                 onTrack = { leg, stopId -> tracking = leg to stopId },
